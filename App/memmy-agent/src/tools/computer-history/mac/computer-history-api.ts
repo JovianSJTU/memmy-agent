@@ -1,11 +1,6 @@
 import { computerHistoryPermissionError } from "../../computer-use/mac-permission-settings.js";
-import {
-  ObservationSettingsStore,
-} from "./settings-store.js";
-import {
-  DEFAULT_OBSERVATION_SETTINGS,
-  parseObservationSettings,
-} from "./observation-settings.js";
+import { ObservationSettingsStore } from "../core/settings-store.js";
+import { DEFAULT_OBSERVATION_SETTINGS, parseObservationSettings } from "../core/observation-settings.js";
 import {
   applicationsFromMarkdown,
   applyNarrative,

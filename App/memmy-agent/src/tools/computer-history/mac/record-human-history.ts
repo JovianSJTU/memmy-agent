@@ -9,7 +9,7 @@ import path from "node:path";
 import readline from "node:readline";
 import { promisify } from "node:util";
 import { fileURLToPath } from "node:url";
-import { redactSensitive } from "./redaction.js";
+import { redactSensitive } from "../core/redaction.js";
 import { ensureNativeHistoryHelper } from "./native-helper.js";
 import {
   BROWSER_BUNDLE_IDS,

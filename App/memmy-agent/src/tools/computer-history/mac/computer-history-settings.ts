@@ -5,7 +5,7 @@ import { isComputerHistorySupported } from "../platform.js";
 import {
   ObservationSettingsError,
   ObservationSettingsStore,
-} from "./settings-store.js";
+} from "../core/settings-store.js";
 
 // The recorder's own lifecycle vocabulary. `paused` keeps the current segment
 // but stops writing to it; `stopped` records nothing while previously completed
