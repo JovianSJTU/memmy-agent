@@ -75,7 +75,21 @@ function legacyTarget(target: UiTarget | null): Record<string, unknown> | null {
 
 /** Temporary compatibility adapter to preserve Mac's existing v1 event logic. */
 export function captureEventToLegacy(event: CaptureEvent): Record<string, any> {
+  return captureEventToInternal(event, true);
+}
+
+/** Live recording uses semantic roles and normalized IDs on every platform. */
+export function captureEventToRecordingEvent(event: CaptureEvent): Record<string, any> {
+  return captureEventToInternal(event, false);
+}
+
+function captureEventToInternal(event: CaptureEvent, legacy: boolean): Record<string, any> {
   const { context, kind, data } = event;
+  const target = (value: UiTarget | null) => legacy ? legacyTarget(value) : value ? {
+    ...value.element,
+    ...(value.ancestors ? { ancestors: value.ancestors } : {}),
+    ...(value.descendants ? { descendants: value.descendants } : {}),
+  } : null;
   const bundleId = context.application.id.startsWith("bundle:")
     ? context.application.id.slice("bundle:".length)
     : context.application.id;
@@ -83,7 +97,7 @@ export function captureEventToLegacy(event: CaptureEvent): Record<string, any> {
     timestamp: event.occurredAt,
     app: {
       name: context.application.name,
-      bundleIdentifier: bundleId,
+      ...(legacy ? { bundleIdentifier: bundleId } : { id: context.application.id }),
       secureInput: context.privacy.secureInput,
     },
     window: {
@@ -94,6 +108,7 @@ export function captureEventToLegacy(event: CaptureEvent): Record<string, any> {
       privateBrowsing: context.privacy.privateWindow === "yes",
     },
     captureSource: { runId: event.runId, sequence: event.sequence },
+    ...(!legacy ? { privacy: context.privacy } : {}),
   };
   switch (kind) {
     case "app.activated":
@@ -105,30 +120,30 @@ export function captureEventToLegacy(event: CaptureEvent): Record<string, any> {
       return {
         ...base,
         kind: data.button === "right" ? "mouse.context_menu" : "mouse.click",
-        mouse: { button: data.button, clickCount: data.clickCount, target: legacyTarget(data.target) },
+        mouse: { button: data.button, clickCount: data.clickCount, target: target(data.target) },
       };
     case "pointer.drag":
       return { ...base, kind: "mouse.drag", mouse: {
-        origin: legacyTarget(data.origin), destination: legacyTarget(data.destination),
+        origin: target(data.origin), destination: target(data.destination),
       } };
     case "keyboard.shortcut": {
-      const modifiers = data.modifiers.map((modifier) => modifier === "meta" ? "cmd" : modifier === "alt" ? "option" : modifier);
+      const modifiers = legacy ? data.modifiers.map((modifier) => modifier === "meta" ? "cmd" : modifier === "alt" ? "option" : modifier) : data.modifiers;
       return { ...base, kind: "keyboard.shortcut", keyboard: {
         keyEquivalent: data.key,
         ...(data.key === "keycode-15" ? { keyCode: 15 } : {}),
         modifiers,
-        target: legacyTarget(data.target),
+        target: target(data.target),
       } };
     }
     case "keyboard.submit":
-      return { ...base, kind: "keyboard.submit", keyboard: { keyEquivalent: "return", target: legacyTarget(data.target) } };
+      return { ...base, kind: "keyboard.submit", keyboard: { keyEquivalent: "return", target: target(data.target) } };
     case "keyboard.text":
-      return { ...base, kind: "keyboard.text_input", keyboard: { text: data.text, target: legacyTarget(data.target) } };
+      return { ...base, kind: "keyboard.text_input", keyboard: { text: data.text, target: target(data.target) } };
     case "selection.changed":
       return { ...base, kind: "selection.changed", selection: {
         selectedText: context.privacy.secureInput || context.privacy.passwordTarget || data.target?.element?.isPassword
           ? null : data.selectedText,
-        target: legacyTarget(data.target),
+        target: target(data.target),
       } };
     case "ui.snapshot": {
       const lines = data.nodes.map((node) => [

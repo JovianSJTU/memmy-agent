@@ -127,7 +127,7 @@ export function toHistoryV2Event(input: {
   sequence: number;
   timestamp: string;
   eventType: string;
-  application?: { name?: string; bundleId?: string };
+  application?: { id?: string; name?: string; bundleId?: string };
   details?: Record<string, unknown>;
   ax?: {
     mode?: string;
@@ -150,8 +150,8 @@ export function toHistoryV2Event(input: {
     timestamp: input.timestamp,
     eventType,
     application: {
-      id: `bundle:${bundleId}`,
-      name: input.application?.name ?? bundleId,
+      id: input.application?.id ?? `bundle:${bundleId}`,
+      name: input.application?.name ?? input.application?.id ?? bundleId,
     },
     details: semanticizeAccessibility(input.details ?? {}) as Record<string, unknown>,
   };

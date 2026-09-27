@@ -4,3 +4,8 @@ export * from "./history-format.js";
 export * from "./observation-settings.js";
 export { redactSensitive } from "./redaction.js";
 export { ObservationSettingsStore, defaultSettingsFile } from "./settings-store.js";
+export * from "./platform.js";
+export { startCaptureProcess } from "./capture-process.js";
+export { runRecorder, parseArgs as parseRecorderArgs } from "./recorder.js";
+export { createRecordingPipeline, type RecorderArgs } from "./recording-pipeline.js";
+export * from "./history-service.js";

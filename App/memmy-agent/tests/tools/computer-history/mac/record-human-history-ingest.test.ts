@@ -22,7 +22,10 @@ function fixtureProtocolMessages(event: Record<string, any>, sequence: { value: 
   const context = {
     application: { id: `bundle:${bundleId}`, idKind: "bundle_id", name: app.name ?? "Fixture",
       pid: Number.isInteger(app.pid) && app.pid > 0 ? app.pid : 100 },
-    window: { id: window.id ?? "fixture-window", title: window.title ?? null, isBrowser: window.browser === true,
+    window: { id: window.id ?? "fixture-window", title: window.title ?? null,
+      // Match the Mac collector: browser identity is emitted by the platform,
+      // including when the current URL is unavailable.
+      isBrowser: window.browser === true || bundleId === "com.google.Chrome",
       page: typeof window.url === "string"
         ? { state: "known", url: window.url.replace(/[?#].*$/, "") }
         : { state: "unknown" } },
