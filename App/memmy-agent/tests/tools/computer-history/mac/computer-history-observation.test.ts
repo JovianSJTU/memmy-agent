@@ -21,6 +21,7 @@ fs.writeFileSync(stubRecorder, [
   "const stop = () => process.exit(0);",
   'process.on("SIGTERM", stop);',
   'process.on("SIGINT", stop);',
+  'process.send?.({ type: "computer-history-ready", runId: "9d303f41-d994-4f5c-a907-5fb6e5fbe111" });',
   "setInterval(() => {}, 1 << 30);",
   "",
 ].join("\n"), "utf8");
@@ -60,7 +61,7 @@ describe("Computer History observation lifecycle", () => {
     const instance = service();
     const snapshot = instance.startObservation();
 
-    expect(snapshot.observation.state).toBe("running");
+    expect(snapshot.observation.state).toBe("starting");
     // Segment ids align to the ten-minute grid so they sort and group cleanly.
     expect(snapshot.observation.segmentId).toMatch(/^\d{4}-\d{2}-\d{2}T\d{2}-[0-5]0-00Z$/);
     await instance.stopObservation();
@@ -92,7 +93,7 @@ describe("Computer History observation lifecycle", () => {
     expect(paused.observation.segmentId).toBe(started.observation.segmentId);
 
     const resumed = instance.resumeObservation();
-    expect(resumed.observation.state).toBe("running");
+    expect(resumed.observation.state).toBe("starting");
     expect(resumed.observation.segmentId).toBe(started.observation.segmentId);
     await instance.stopObservation();
   });
@@ -308,7 +309,7 @@ describe("deleting while recording", () => {
     // Deleting it removed the directory the recorder writes to, and recording
     // carried on showing "running" while nothing more was kept.
     expect(() => instance.deleteHistory(`${segmentId}-10min-summary`)).toThrow(/stop recording before deleting/);
-    expect(instance.snapshot().observation.state).toBe("running");
+    expect(instance.snapshot().observation.state).toBe("starting");
   });
 });
 

@@ -10,10 +10,11 @@ import {
 // The recorder's own lifecycle vocabulary. `paused` keeps the current segment
 // but stops writing to it; `stopped` records nothing while previously completed
 // segments stay searchable.
-export type ComputerHistoryRunState = "running" | "paused" | "stopped" | "stopping" | "failed";
+export type ComputerHistoryRunState = "starting" | "running" | "paused" | "stopped" | "stopping" | "failed";
 
 export function runStateFrom(state: string): ComputerHistoryRunState {
   switch (state) {
+    case "starting": return "starting";
     case "running": return "running";
     case "paused": return "paused";
     case "stopping": return "stopping";

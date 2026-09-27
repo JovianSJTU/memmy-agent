@@ -56,7 +56,7 @@ export const ComputerHistoryWorkflowSchema = z.object({
 // not the other breaks the page rather than being ignored.
 export const ComputerHistorySnapshotSchema = z.object({
   observation: z.object({
-    state: z.enum(["running", "paused", "stopped", "stopping", "failed"]),
+    state: z.enum(["starting", "running", "paused", "stopped", "stopping", "failed"]),
     startedAt: z.string().nullable(),
     segmentId: z.string().nullable(),
     segmentStartedAt: z.string().nullable(),

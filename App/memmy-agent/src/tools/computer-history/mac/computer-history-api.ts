@@ -113,6 +113,8 @@ export interface ComputerHistoryMatch {
 // window of time it covers.
 interface SegmentState {
   child: ChildProcessWithoutNullStreams | null;
+  recorderReady: Promise<void> | null;
+  recorderReadyState: "starting" | "ready" | "failed";
   id: string;
   directory: string;
   startedAt: string;
@@ -124,11 +126,12 @@ interface SegmentState {
 }
 
 /**
- * `paused` keeps the current segment open but stops writing to it, so the user
- * can step away from recording without losing the arc they were in the middle
- * of. `stopped` records nothing while every completed segment stays searchable.
+ * `starting` waits for the protocol ready handshake. `paused` keeps the current
+ * segment open but stops writing to it, so the user can step away without
+ * losing the arc they were in the middle of. `stopped` records nothing while
+ * every completed segment stays searchable.
  */
-export type ObservationState = "running" | "paused" | "stopped" | "stopping" | "failed";
+export type ObservationState = "starting" | "running" | "paused" | "stopped" | "stopping" | "failed";
 
 const SEGMENT_DURATION_MS = 10 * 60 * 1000;
 const SEGMENTS_DIRECTORY_NAME = "segments";
@@ -527,7 +530,8 @@ export class ComputerHistoryDemoService {
     const snapshotAt = new Date();
     return {
       observation: {
-        state: this.observationState,
+        state: this.observationState === "running" && this.segment?.recorderReadyState === "starting"
+          ? "starting" : this.observationState,
         startedAt: this.observationStartedAt,
         segmentId: this.segment?.id ?? null,
         segmentStartedAt: this.segment?.startedAt ?? null,
@@ -632,6 +636,8 @@ export class ComputerHistoryDemoService {
     );
     return {
       child: null,
+      recorderReady: null,
+      recorderReadyState: "ready",
       id,
       directory,
       startedAt,
@@ -643,11 +649,40 @@ export class ComputerHistoryDemoService {
     };
   }
 
-  private spawnRecorder(segment: SegmentState): void {
+  private spawnRecorder(segment: SegmentState): Promise<void> {
     const recorder = this.recorderScript;
     if (!fs.existsSync(recorder)) throw new ComputerHistoryApiError(503, "recorder script is unavailable");
     const startedAtByte = fs.existsSync(segment.eventsFile) ? fs.statSync(segment.eventsFile).size : 0;
     segment.stoppedByUser = false;
+    segment.recorderReadyState = "starting";
+    let readyResolve!: () => void;
+    let readyReject!: (error: Error) => void;
+    let readySettled = false;
+    let readyTimer: ReturnType<typeof setTimeout> | null = null;
+    const recorderReady = new Promise<void>((resolve, reject) => {
+      readyResolve = resolve;
+      readyReject = reject;
+    });
+    // startObservation() remains synchronous for internal callers, but this
+    // promise is also awaited by the permission-checked UI start route.
+    void recorderReady.catch(() => undefined);
+    segment.recorderReady = recorderReady;
+    const resolveReady = () => {
+      if (readySettled) return;
+      readySettled = true;
+      if (readyTimer) clearTimeout(readyTimer);
+      readyTimer = null;
+      segment.recorderReadyState = "ready";
+      readyResolve();
+    };
+    const rejectReady = (error: Error) => {
+      if (readySettled) return;
+      readySettled = true;
+      if (readyTimer) clearTimeout(readyTimer);
+      readyTimer = null;
+      segment.recorderReadyState = "failed";
+      readyReject(error);
+    };
     const child = spawn(process.execPath, [
       recorder,
       "--title", `Computer History ${segment.id}`,
@@ -659,11 +694,26 @@ export class ComputerHistoryDemoService {
       "--observation-settings", this.observationSettings.filePath,
     ], {
       env: process.env,
-      stdio: ["pipe", "pipe", "pipe"],
-    });
+      stdio: ["pipe", "pipe", "pipe", "ipc"],
+    }) as ChildProcessWithoutNullStreams;
     segment.child = child;
     this.recorderChildren.add(child);
     child.once("exit", () => this.recorderChildren.delete(child));
+    child.on("message", (message: unknown) => {
+      if (!message || typeof message !== "object" || Array.isArray(message)) return;
+      const ready = message as { type?: unknown; runId?: unknown };
+      if (ready.type !== "computer-history-ready"
+        || typeof ready.runId !== "string"
+        || !/^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(ready.runId)) return;
+      resolveReady();
+    });
+    readyTimer = setTimeout(() => {
+      const error = new Error("recorder did not complete the capture protocol ready handshake within 30 seconds");
+      rejectReady(error);
+      if (this.segment?.child === child) this.failObservation(error.message);
+      if (child.exitCode === null && child.signalCode === null) child.kill("SIGTERM");
+    }, 30_000);
+    readyTimer.unref?.();
 
     const append = (chunk: Buffer) => {
       if (this.segment?.child !== child) return;
@@ -672,11 +722,16 @@ export class ComputerHistoryDemoService {
     child.stdout.on("data", append);
     child.stderr.on("data", append);
     child.once("error", (error) => {
+      rejectReady(error);
       if (!child.pid) this.recorderChildren.delete(child);
       if (this.segment?.child !== child) return;
       this.failObservation(error.message);
     });
     child.once("exit", (code) => {
+      if (!readySettled) {
+        const detail = this.segment?.child === child ? this.segment.output.trim() : "";
+        rejectReady(new Error(detail || `recorder exited before capture protocol ready (${code ?? "unknown"})`));
+      }
       const reason = code === 0 ? recorderUserStopReason(segment.eventsFile, startedAtByte) : null;
       // Preserve an explicit stop even when an overlapping pause/rotation has
       // already detached this child. Its own SIGTERM produces user_interrupt,
@@ -698,6 +753,7 @@ export class ComputerHistoryDemoService {
       }
       this.failObservation(this.segment.output.trim() || `recorder exited with code ${code}`);
     });
+    return recorderReady;
   }
 
   private failObservation(message: string): void {
@@ -1136,7 +1192,22 @@ export class ComputerHistoryDemoService {
       }
       return this.snapshot();
     }
-    return resume ? this.resumeObservation() : this.startObservation();
+    const snapshot = resume ? this.resumeObservation() : this.startObservation();
+    const ready = this.segment?.recorderReady;
+    if (ready) {
+      try {
+        await ready;
+      } catch (error) {
+        if (version !== this.permissionStartVersion || this.shuttingDown) return this.snapshot();
+        if (this.segment?.recorderReady === ready && this.observationState === "running") {
+          this.failObservation(error instanceof Error ? error.message : String(error));
+        }
+        throw error;
+      }
+      if (version !== this.permissionStartVersion || this.shuttingDown) return this.snapshot();
+      return this.snapshot();
+    }
+    return snapshot;
   }
 
   /**
@@ -1352,7 +1423,8 @@ export class ComputerHistoryDemoService {
           id: entry.name, directory, eventsFile, historyFile,
           metadataFile: path.join(directory, "metadata.json"),
           startedAt: new Date(segmentAgeMs(directory)).toISOString(),
-          child: null, output: "", stoppedByUser: false,
+          child: null, recorderReady: null, output: "", stoppedByUser: false,
+          recorderReadyState: "ready",
         };
         this.invalidateSummary(historyFile);
         const error = this.writeSegmentSummary(segment, standing && isNarrated(standing) ? staging : historyFile, true);

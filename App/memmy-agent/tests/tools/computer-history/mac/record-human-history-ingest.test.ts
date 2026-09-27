@@ -6,12 +6,93 @@ import path from "node:path";
 import { PassThrough } from "node:stream";
 import { afterEach, beforeEach, test, vi } from "vitest";
 import { nativePrivacyFixture } from "./native-privacy-fixture.js";
+import { normalizeHistoryRecord } from "../../../../src/tools/computer-history/core/history-format.js";
 
 const helper = vi.hoisted(() => ({
   events: [] as Record<string, any>[],
   afterEvent: undefined as ((index: number) => void) | undefined,
   onCommand: undefined as ((command: string, args: string[]) => void) | undefined,
 }));
+const fixtureRunId = "9d303f41-d994-4f5c-a907-5fb6e5fbe111";
+
+function fixtureProtocolMessages(event: Record<string, any>, sequence: { value: number }): Record<string, any>[] {
+  const app = event.app ?? { name: "Notes", bundleIdentifier: "com.apple.Notes", secureInput: false };
+  const window = event.window ?? {};
+  const bundleId = app.bundleIdentifier ?? "com.example.fixture";
+  const context = {
+    application: { id: `bundle:${bundleId}`, idKind: "bundle_id", name: app.name ?? "Fixture",
+      pid: Number.isInteger(app.pid) && app.pid > 0 ? app.pid : 100 },
+    window: { id: window.id ?? "fixture-window", title: window.title ?? null, isBrowser: window.browser === true,
+      page: typeof window.url === "string"
+        ? { state: "known", url: window.url.replace(/[?#].*$/, "") }
+        : { state: "unknown" } },
+    privacy: { secureInput: app.secureInput === true, passwordTarget: false,
+      privateWindow: window.privateBrowsing === true ? "yes" : "unknown", systemSurface: false },
+  };
+  const messages: Record<string, any>[] = [];
+  const toNode = (value: Record<string, any>) => {
+    const nativeRole = value.role ?? value.subrole ?? "AXUnknown";
+    const password = nativeRole === "AXSecureTextField" || value.subrole === "AXSecureTextField";
+    const role = ({ AXSearchField: "search_field", AXTextField: "text_field", AXButton: "button",
+      AXStaticText: "text", AXLink: "link", AXWebArea: "document" } as Record<string, string>)[nativeRole] ?? "unknown";
+    return { role, nativeRole, isPassword: password,
+      ...(value.title ? { name: value.title } : {}),
+      ...(value.description ? { description: value.description } : {}),
+      ...(value.identifier ? { automationId: value.identifier } : {}),
+      ...(!password && value.value ? { value: value.value } : {}) };
+  };
+  const toTarget = (value: Record<string, any> | null | undefined) => {
+    if (!value) return null;
+    const target = value.element ? value : { element: value };
+    return { element: target.element ? toNode(target.element) : null,
+      ...(target.ancestors ? { ancestors: target.ancestors.map(toNode) } : {}),
+      ...(target.descendants ? { descendants: target.descendants.map(toNode) } : {}) };
+  };
+  const pushEvent = (kind: string, data: Record<string, any> = {}) => messages.push({
+    v: 1, type: "event", runId: fixtureRunId, sequence: ++sequence.value,
+    occurredAt: event.timestamp ?? "2026-09-24T00:00:00Z", kind, context, data,
+  });
+  if (event.gapBefore) {
+    messages.push({ v: 1, type: "gap", runId: fixtureRunId,
+      fromSequence: sequence.value + 1, toSequence: sequence.value + 1, reason: "overflow" });
+    sequence.value += 1;
+  }
+  if (event.ax?.mode !== "diffFromPrevious" && typeof event.ax?.text === "string") {
+    const nodes = event.ax.text.split("\n").filter(Boolean).map((line: string) => {
+      const fields = line.replace(/^[+-] /, "").split("|");
+      return toNode({ role: fields[0] || "AXUnknown", subrole: fields[1], title: fields[2],
+        description: fields[3], identifier: fields[4], value: fields[5] });
+    });
+    pushEvent("ui.snapshot", { windowKey: event.ax.windowKey ?? "fixture-window", nodes });
+  }
+  switch (event.kind) {
+    case "session.started":
+    case "window.changed": pushEvent("window.changed"); break;
+    case "page.changed": pushEvent("page.changed"); break;
+    case "mouse.click":
+    case "mouse.context_menu": pushEvent("pointer.click", {
+      button: event.kind === "mouse.context_menu" ? "right" : event.mouse?.button ?? "left",
+      clickCount: event.mouse?.clickCount ?? 1, target: null,
+    }); break;
+    case "keyboard.text_input":
+      if (app.secureInput !== true && event.keyboard?.target?.subrole !== "AXSecureTextField") {
+        pushEvent("keyboard.text", { text: event.keyboard?.text ?? "", target: toTarget(event.keyboard?.target) });
+      }
+      break;
+    case "keyboard.shortcut": pushEvent("keyboard.shortcut", {
+      key: event.keyboard?.keyEquivalent ?? "c",
+      modifiers: (event.keyboard?.modifiers ?? []).map((value: string) => value === "cmd" ? "meta" : value === "option" ? "alt" : value),
+      target: toTarget(event.keyboard?.target),
+    }); break;
+    case "keyboard.submit": pushEvent("keyboard.submit", { target: null }); break;
+    case "selection.changed": pushEvent("selection.changed", {
+      selectedText: event.selection?.selectedText ?? null, target: null,
+    }); break;
+    default: break;
+  }
+  return messages;
+}
+
 vi.mock("../../../../src/tools/computer-history/mac/native-helper.js", () => ({
   ensureNativeHistoryHelper: async () => "/fixture/human-recorder",
 }));
@@ -35,11 +116,19 @@ vi.mock("node:child_process", async () => {
         kill() { this.killed = true; return true; },
       });
       setImmediate(async () => {
+        child.stdout.write(`${JSON.stringify({ v: 1, type: "ready", runId: fixtureRunId,
+          platform: "macos", capabilities: ["pointer", "keyboard", "ui_tree", "selected_text", "browser_url", "private_window_detection"] })}\n`);
+        const sequence = { value: 0 };
         for (const [index, event] of helper.events.entries()) {
-          child.stdout.write(`${JSON.stringify(event)}\n`);
-          await new Promise<void>((resolve) => setImmediate(resolve));
+          for (const message of fixtureProtocolMessages(event, sequence)) {
+            child.stdout.write(`${JSON.stringify(message)}\n`);
+            await new Promise<void>((resolve) => setImmediate(resolve));
+          }
           helper.afterEvent?.(index);
         }
+        child.stdout.write(`${JSON.stringify({ v: 1, type: "stopped", runId: fixtureRunId,
+          lastSequence: sequence.value, reason: "requested" })}\n`);
+        await new Promise<void>((resolve) => setImmediate(resolve));
         child.stdout.end();
         child.emit("exit", 0, null);
         child.emit("close", 0, null);
@@ -49,7 +138,7 @@ vi.mock("node:child_process", async () => {
   };
 });
 
-import { run } from "../../../../src/tools/computer-history/mac/record-human-history.js";
+import { isStopHotkey, run } from "../../../../src/tools/computer-history/mac/record-human-history.js";
 
 const platform = Object.getOwnPropertyDescriptor(process, "platform")!;
 let directory: string;
@@ -91,8 +180,19 @@ async function record(policy?: unknown, { screenshots = false, flags = [] as str
     args.push("--observation-settings", settingsFile);
   }
   await run(args);
-  return fs.readFileSync(output, "utf8").trim().split("\n").map((line) => JSON.parse(line));
+  return fs.readFileSync(output, "utf8").trim().split("\n")
+    .map((line) => normalizeHistoryRecord(JSON.parse(line)));
 }
+
+test("resuming a segment preserves increasing disk sequence numbers", async () => {
+  helper.events = [{ kind: "session.started", app, ax: full }];
+  const firstRun = await record();
+  const previousLast = firstRun.filter((event) => event.recordType === "human_event").at(-1)!.sequence;
+  const resumed = await record();
+  const sequences = resumed.filter((event) => event.recordType === "human_event").map((event) => event.sequence);
+  assert.deepEqual(sequences, Array.from({ length: sequences.length }, (_, index) => index + 1));
+  assert.ok(sequences.at(-1)! > previousLast);
+});
 
 test("persists startup fullTree and every diff across input bursts and shortcuts", async () => {
   helper.events = [
@@ -104,8 +204,18 @@ test("persists startup fullTree and every diff across input bursts and shortcuts
   ];
   const events = await record();
   assert.deepEqual(events.filter((event) => event.ax).map((event) => event.ax), [full, first, second, third]);
-  assert.equal(events.find((event) => event.eventType === "text_input").details.characterCount, 3);
-  assert.equal(events.find((event) => event.eventType === "recording_started").ax.mode, "fullTree");
+  assert.equal(events.find((event) => event.eventType === "text_input")!.details.characterCount, 3);
+  assert.equal(events.find((event) => event.eventType === "recording_started")!.schemaVersion, 1);
+  assert.equal(events.some((event) => event.eventType === "application_changed"), true);
+  const persisted = fs.readFileSync(path.join(directory, "events.jsonl"), "utf8").trim().split("\n")
+    .map((line) => JSON.parse(line));
+  assert.equal(persisted[0].recordType, "human_history_metadata");
+  assert.equal(persisted[0].schemaVersion, 2);
+  assert.equal(persisted[0].platform, "macos");
+  assert.ok(persisted.slice(1).every((event: any) => event.recordType === "human_event" && event.schemaVersion === 2));
+  assert.equal(persisted.find((event: any) => event.eventType === "text_input").application.id, "bundle:com.apple.Notes");
+  const persistedSnapshot = persisted.find((event: any) => event.eventType === "accessibility_snapshot");
+  assert.ok(persistedSnapshot.ui.nodes.every((node: any) => !node.role.startsWith("AX")));
 });
 
 test("filters startup and incremental AX before persistence, including unknown website context", async () => {
@@ -121,7 +231,7 @@ test("filters startup and incremental AX before persistence, including unknown w
     rules: [{ scope: "url", urlDomain: "bank.com", behavior: "do_not_observe" }],
   } });
   assert.deepEqual(events.filter((event) => event.ax).map((event) => event.ax), [thirdTree]);
-  assert.deepEqual(events.filter((event) => event.eventType === "page_context").map((event) => event.details.url), ["https://example.com"]);
+  assert.deepEqual(events.filter((event) => event.eventType === "page_context").map((event) => event.details.url), ["https://example.com/"]);
 });
 
 test("never persists a private startup snapshot or secure text input", async () => {
@@ -140,6 +250,15 @@ const chrome = { ...app, bundleIdentifier: "com.google.Chrome" };
 const window = { browser: true, url: "https://example.com" };
 const searchTarget = { role: "AXSearchField", description: "Search" };
 const ordinaryTarget = { role: "AXTextField", description: "Customer ID" };
+
+test("keeps the Mac stop chord working after protocol key normalization", () => {
+  assert.equal(isStopHotkey({ kind: "keyboard.shortcut", keyboard: {
+    keyEquivalent: "r", modifiers: ["cmd", "control", "option"],
+  } }), true);
+  assert.equal(isStopHotkey({ kind: "keyboard.shortcut", keyboard: {
+    keyEquivalent: "r", modifiers: ["cmd", "option"],
+  } }), false);
+});
 
 test.each([
   { scope: "app", bundleID: "com.google.Chrome", behavior: "do_not_observe" },
@@ -238,7 +357,7 @@ test.runIf(platform.value === "darwin")("native snapshots cannot carry excluded 
   const snapshots = events.filter((event) => event.ax).map((event) => event.ax);
   assert.deepEqual(snapshots.map((ax) => ax.mode), ["fullTree", "diffFromPrevious", "fullTree"]);
   assert.equal(JSON.stringify(events).includes("SYNTHETIC_EXCLUDED_CUSTOMER_ID"), false);
-  assert.deepEqual(snapshots[0], native.restored);
+  assert.deepEqual(snapshots[0], { mode: "fullTree", windowKey: native.restored.windowKey, text: native.restored.text });
   // The permitted delta exactly reconstructs the second permitted tree.
   const reconstructed = new Set<string>(snapshots[0].text.split("\n"));
   for (const line of snapshots[1].text.split("\n")) {
@@ -253,15 +372,15 @@ test.runIf(platform.value === "darwin")("native snapshots cannot carry excluded 
   assert.equal(JSON.stringify(events).includes("SYNTHETIC_ORDINARY_FIELD_TEXT"), false);
 }, 65_000);
 
-test("rejects native diffs, even following a valid tree, and requires a fresh full baseline", async () => {
+test("a protocol capture gap invalidates the baseline and requires a fresh full snapshot", async () => {
   helper.events = [
     { kind: "session.started", app, ax: full },
-    { kind: "mouse.click", app, ax: { ...first, text: "- AXStaticText||EXCLUDED_LEGACY_VALUE|||" } },
+    { kind: "mouse.click", app, gapBefore: true },
     { kind: "mouse.click", app, ax: firstTree },
   ];
   const events = await record();
   assert.deepEqual(events.filter((event) => event.ax).map((event) => event.ax), [full, firstTree]);
-  assert.equal(JSON.stringify(events).includes("EXCLUDED_LEGACY_VALUE"), false);
+  assert.equal(events.some((event) => event.eventType === "capture_gap"), true);
 });
 
 test("a policy change without an intervening excluded event requires a fresh full tree", async () => {

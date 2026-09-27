@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test, vi } from "vitest";
-import { run } from "../../../../src/tools/computer-history/mac/summarize-history.js";
+import { run, reusableHumanActions } from "../../../../src/tools/computer-history/mac/summarize-history.js";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -85,6 +85,16 @@ test("writes a Computer History-style summary from a computer-use session", () =
   assert.match(markdown, /Tool call `computer_screenshot`/);
   assert.match(markdown, /Session status: `completed`/);
   assert.match(markdown, new RegExp(screenshot.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")));
+});
+
+test("reads semantic accessibility targets from persisted v2 events for workflow replay", () => {
+  const actions = reusableHumanActions([{
+    recordType: "human_event", schemaVersion: 2, eventType: "mouse_click",
+    application: { id: "bundle:com.apple.Notes", name: "Notes" },
+    details: { accessibility: { role: "button", nativeRole: "AXButton", name: "Save" } },
+  }]);
+  assert.equal(actions.length, 1);
+  assert.match(actions[0], /locate button "Save"/);
 });
 
 test("supports --last and reports omitted turns", () => {

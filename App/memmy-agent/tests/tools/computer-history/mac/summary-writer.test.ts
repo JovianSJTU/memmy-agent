@@ -255,6 +255,9 @@ describe("segment narrative", () => {
   it("folds the event stream into activity arcs instead of a transcript", () => {
     const lines = [
       JSON.stringify({ timestamp: "2026-09-08T08:28:18Z", eventType: "mouse_click", application: { name: "钉钉" }, details: { accessibility: { title: "任欣悦: 消息内容" } } }),
+      JSON.stringify({ recordType: "human_event", schemaVersion: 2, timestamp: "2026-09-08T08:28:22Z",
+        eventType: "mouse_click", application: { id: "bundle:com.apple.Notes", name: "Notes" },
+        details: { accessibility: { role: "button", nativeRole: "AXButton", name: "Save" } } }),
       ...Array.from({ length: 40 }, () => JSON.stringify({
         timestamp: "2026-09-08T08:28:31Z", eventType: "text_input",
         application: { name: "Claude" }, details: { characterCount: 1, redacted: true },
@@ -270,6 +273,7 @@ describe("segment narrative", () => {
     expect(evidence).toContain("keys: return");
     // The semantic label is what lets the summary say what happened.
     expect(evidence).toContain("任欣悦: 消息内容");
+    expect(evidence).toContain("Save");
   });
 
   it("returns nothing for an empty or unparseable stream", () => {

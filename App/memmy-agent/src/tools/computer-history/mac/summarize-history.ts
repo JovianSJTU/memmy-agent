@@ -8,6 +8,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { normalizeHistoryRecord } from "../core/history-format.js";
 import { redactSensitive } from "../core/redaction.js";
 export { redactSensitive } from "../core/redaction.js";
 
@@ -192,7 +193,7 @@ export function loadRecords(file: string): LoadedRecords {
     if (!line.trim()) return;
     try {
       const record = JSON.parse(line);
-      if (record && typeof record === "object") records.push(record);
+      if (record && typeof record === "object") records.push(normalizeHistoryRecord(record));
     } catch {
       malformedLines.push(index + 1);
     }
@@ -398,8 +399,8 @@ function humanArtifacts(records: JsonRecord[]): string[] {
 function accessibilityNode(raw: any): AccessibilityNode | null {
   if (!raw || typeof raw !== "object") return null;
   const role = cleanInline(raw.role, 80);
-  const subrole = cleanInline(raw.subrole, 80);
-  const label = [raw.title, raw.description, raw.value, raw.help, raw.identifier]
+  const subrole = cleanInline(raw.subrole ?? raw.nativeRole, 80);
+  const label = [raw.name, raw.title, raw.description, raw.value, raw.help, raw.identifier, raw.automationId]
     .map((value) => cleanInline(value, 180))
     .find(Boolean);
   if (!role && !subrole && !label) return null;
@@ -407,14 +408,15 @@ function accessibilityNode(raw: any): AccessibilityNode | null {
     role,
     subrole,
     label,
-    text: [subrole || role, label ? JSON.stringify(label) : ""].filter(Boolean).join(" "),
+    text: [role || subrole, label ? JSON.stringify(label) : ""].filter(Boolean).join(" "),
   };
 }
 
 const INTERACTIVE_ACCESSIBILITY_ROLES = new Set([
   "AXButton", "AXRadioButton", "AXCheckBox", "AXPopUpButton", "AXTextField",
   "AXTextArea", "AXComboBox", "AXLink", "AXMenuItem", "AXTabButton", "AXSlider",
-  "AXIncrementor", "AXSearchField",
+  "AXIncrementor", "AXSearchField", "button", "radio_button", "checkbox", "text_field",
+  "link", "menu_item", "tab", "slider", "search_field",
 ]);
 
 function isInteractiveAccessibilityNode(node: AccessibilityNode | null | undefined): boolean {
@@ -521,7 +523,8 @@ export function reusableHumanActions(events: JsonRecord[]): string[] {
     if (action) actions.push(action);
     pendingScrolls = [];
   };
-  for (const event of events) {
+  for (const rawEvent of events) {
+    const event = normalizeHistoryRecord(rawEvent);
     if (event.eventType === "scroll") {
       pendingScrolls.push(event);
       continue;

@@ -9,6 +9,9 @@ import path from "node:path";
 import readline from "node:readline";
 import { promisify } from "node:util";
 import { fileURLToPath } from "node:url";
+import { CaptureStreamSession, captureEventToLegacy } from "../core/capture-session.js";
+import type { UiNode } from "../core/capture-protocol.js";
+import { toHistoryV2Event } from "../core/history-format.js";
 import { redactSensitive } from "../core/redaction.js";
 import { ensureNativeHistoryHelper } from "./native-helper.js";
 import {
@@ -252,12 +255,20 @@ export function scrubAxSnapshot(ax: unknown): unknown {
   return {
     ...snapshot,
     text: snapshot.text.split("\n").map((line) => scrubTreeLine(line)).join("\n"),
+    ...(Array.isArray(snapshot.nodes) ? {
+      nodes: snapshot.nodes.map((node) => {
+        const scrubbed = scrubAccessibility(node) as Record<string, unknown>;
+        if (scrubbed.isPassword === true) delete scrubbed.value;
+        return scrubbed;
+      }),
+    } : {}),
   };
 }
 
 interface AxBaseline {
   windowKey: string;
   lines: string[];
+  nodes: UiNode[] | null;
 }
 
 function prepareAuthorizedAxSnapshot(ax: unknown, previous: AxBaseline | null): {
@@ -271,9 +282,50 @@ function prepareAuthorizedAxSnapshot(ax: unknown, previous: AxBaseline | null): 
     return { snapshot: null, baseline: null };
   }
   const lines = current.text.split("\n");
+  const nodes = Array.isArray(current.nodes) ? current.nodes as UiNode[] : null;
   const baseline = typeof current.windowKey === "string"
-    ? { windowKey: current.windowKey, lines } : null;
+    ? { windowKey: current.windowKey, lines, nodes } : null;
   if (!baseline || previous?.windowKey !== baseline.windowKey) return { snapshot: current, baseline };
+  if (nodes && previous.nodes) {
+    const nodeKey = (node: UiNode) => JSON.stringify({
+      role: node.role,
+      ...(node.nativeRole !== undefined ? { nativeRole: node.nativeRole } : {}),
+      ...(node.name !== undefined ? { name: node.name } : {}),
+      ...(node.description !== undefined ? { description: node.description } : {}),
+      ...(node.automationId !== undefined ? { automationId: node.automationId } : {}),
+      ...(node.value !== undefined ? { value: node.value } : {}),
+      isPassword: node.isPassword,
+    });
+    const beforeKeys = previous.nodes.map(nodeKey);
+    const afterKeys = nodes.map(nodeKey);
+    const before = new Set(beforeKeys);
+    const after = new Set(afterKeys);
+    if (before.size !== beforeKeys.length || after.size !== afterKeys.length) {
+      return { snapshot: current, baseline };
+    }
+    if (beforeKeys.length === afterKeys.length && beforeKeys.every((key, index) => key === afterKeys[index])) {
+      return { snapshot: null, baseline };
+    }
+    const removedNodes = previous.nodes.filter((node) => !after.has(nodeKey(node)));
+    const addedNodes = nodes.filter((node) => !before.has(nodeKey(node)));
+    const changed = removedNodes.length + addedNodes.length;
+    if (!changed || before.size !== previous.nodes.length || after.size !== nodes.length
+      || changed > Math.max(nodes.length, 1) * 0.6) return { snapshot: current, baseline };
+    const nodeLine = (node: UiNode) => [
+      node.nativeRole ?? node.role,
+      node.isPassword ? "AXSecureTextField" : "",
+      node.name ?? "",
+      node.description ?? "",
+      node.automationId ?? "",
+      node.isPassword ? "[REDACTED]" : node.value ?? "",
+    ].map((value) => redactSensitive(value)).join("|");
+    return {
+      snapshot: { ...current, mode: "diffFromPrevious",
+        text: [...removedNodes.map((node) => `- ${nodeLine(node)}`), ...addedNodes.map((node) => `+ ${nodeLine(node)}`)].join("\n"),
+        addedNodes, removedNodes },
+      baseline,
+    };
+  }
   if (previous.lines.length === lines.length && previous.lines.every((line, index) => line === lines[index])) {
     return { snapshot: null, baseline };
   }
@@ -375,8 +427,9 @@ export function normalizeKeyBurst(
 
 export function isStopHotkey(event: HelperEvent | undefined): boolean {
   const modifiers = new Set(event?.keyboard?.modifiers ?? []);
+  const stopKey = event?.keyboard?.keyCode === 15 || event?.keyboard?.keyEquivalent === "r";
   return event?.kind === "keyboard.shortcut"
-    && event.keyboard?.keyCode === 15
+    && stopKey
     && modifiers.has("cmd")
     && modifiers.has("control")
     && modifiers.has("option");
@@ -482,26 +535,43 @@ export async function run(
   fs.mkdirSync(recordingDir, { recursive: true });
 
   const startedAt = new Date().toISOString();
-  appendJsonLine(output, {
-    recordType: "human_history_metadata",
-    schemaVersion: 1,
-    recordingId,
-    title: args.title ?? "Human-operated macOS workflow",
-    createdAt: startedAt,
-    platform: "macOS",
-    display: { width: permissions.mainDisplayWidth, height: permissions.mainDisplayHeight },
-    captureText: args.captureText,
-    captureSearchText: args.captureSearchText,
-    allowedApplications: args.allowApps,
-    captureScopeApplications: args.onlyApps,
-    ...(contextUrl ? { contextUrl } : {}),
-    privacy: "Search/address-field text is retained only when explicitly enabled; other text is retained only for allowed bundle ids. Common credential patterns are redacted.",
-  });
-
+  let metadataWritten = false;
   let sequence = 0;
+  // Pause/resume appends another helper run to the same segment. Disk
+  // sequence numbers must keep increasing independently of helper sequence.
+  if (fs.existsSync(output)) {
+    const existingLines = readline.createInterface({ input: fs.createReadStream(output), crlfDelay: Infinity });
+    for await (const line of existingLines) {
+      if (!line.trim()) continue;
+      const record = JSON.parse(line);
+      if (record.recordType === "human_event" && Number.isSafeInteger(record.sequence)) {
+        sequence = Math.max(sequence, record.sequence);
+      }
+    }
+  }
   let lastPageContextUrl: string | null = null;
   let axBaseline: AxBaseline | null = null;
   let observationPolicyVersion: string | null = null;
+  const writeMetadata = () => {
+    if (metadataWritten) return;
+    metadataWritten = true;
+    appendJsonLine(output, {
+      recordType: "human_history_metadata",
+      schemaVersion: 2,
+      recordingId,
+      title: args.title ?? "Human-operated macOS workflow",
+      createdAt: startedAt,
+      platform: "macos",
+      captureProtocolVersion: 1,
+      display: { width: permissions.mainDisplayWidth, height: permissions.mainDisplayHeight },
+      captureText: args.captureText,
+      captureSearchText: args.captureSearchText,
+      allowedApplications: args.allowApps,
+      captureScopeApplications: args.onlyApps,
+      ...(contextUrl ? { contextUrl } : {}),
+      privacy: "Search/address-field text is retained only when explicitly enabled; other text is retained only for allowed bundle ids. Common credential patterns are redacted.",
+    });
+  };
   const canObserve = (subject: ObservationSubject) => {
     const settings = loadObservationSettings(args.observationSettings);
     const version = JSON.stringify(settings);
@@ -520,6 +590,16 @@ export async function run(
   let finishPromise: Promise<void> | null = null;
   let terminalLines: readline.Interface | null = null;
   let stopFromHotkey: (() => void) | null = null;
+  let pendingStopHotkey = false;
+  let resolveRunCompletion!: () => void;
+  let rejectRunCompletion!: (error: Error) => void;
+  const runCompletion = new Promise<void>((resolve, reject) => {
+    resolveRunCompletion = resolve;
+    rejectRunCompletion = reject;
+  });
+  // A helper may exit between ready and the caller's first await of this
+  // promise; attach a rejection handler now while still propagating it below.
+  void runCompletion.catch(() => undefined);
   let childClosedResolve!: () => void;
   const childClosed = new Promise<void>((resolve) => {
     childClosedResolve = resolve;
@@ -533,6 +613,7 @@ export async function run(
       details = {},
       ax = null,
       subjects,
+      source,
     }: {
       eventType: string;
       timestamp?: string;
@@ -540,6 +621,7 @@ export async function run(
       details?: Record<string, unknown>;
       ax?: unknown;
       subjects?: ObservationSubject[];
+      source?: { runId: string; sequence: number };
     },
     screenshot = false,
   ) => {
@@ -572,16 +654,23 @@ export async function run(
     }
     // Every event is written through here, so this is where accessibility
     // text is scrubbed: a new event type cannot forget to.
-    appendJsonLine(output, {
-      recordType: "human_event",
+    appendJsonLine(output, toHistoryV2Event({
       sequence,
       timestamp: timestamp ?? new Date().toISOString(),
       eventType,
       application,
-      details: scrubAccessibility(details),
-      ...(preparedAx?.snapshot ? { ax: preparedAx.snapshot } : {}),
-      ...(screenshotPath ? { screenshot: screenshotPath } : {}),
-    });
+      details: scrubAccessibility(details) as Record<string, unknown>,
+      ax: preparedAx?.snapshot as {
+        mode?: string;
+        windowKey?: string;
+        text?: string;
+        nodes?: UiNode[];
+        addedNodes?: UiNode[];
+        removedNodes?: UiNode[];
+      } | undefined,
+      source,
+      screenshot: screenshotPath ?? undefined,
+    }));
     if (preparedAx) axBaseline = preparedAx.baseline;
   };
 
@@ -594,7 +683,7 @@ export async function run(
     if (!events.length) return;
     const normalized = normalizeKeyBurst(events, args);
     await appendEvent({ ...normalized, timestamp: events[0].timestamp,
-      subjects: events.map(observationSubject) });
+      subjects: events.map(observationSubject), source: events.at(-1)?.captureSource });
   };
 
   const safely = recordingStep(() => {
@@ -630,6 +719,7 @@ export async function run(
         subjects,
         details: { goal: args.title ?? "Human-operated macOS workflow" },
         ax: event.ax,
+        source: event.captureSource,
       }, true);
       return;
     }
@@ -642,6 +732,7 @@ export async function run(
         application,
         subjects,
         ax: event.ax,
+        source: event.captureSource,
       });
     }
 
@@ -656,6 +747,7 @@ export async function run(
         timestamp: event.timestamp,
         application,
         subjects,
+        source: event.captureSource,
         details: {
           url: windowUrl,
           ...(typeof event.window?.title === "string"
@@ -664,6 +756,11 @@ export async function run(
         },
       });
     }
+
+    // A snapshot is its own protocol event. It updates the persisted AX tree,
+    // but must not split a text burst that is otherwise continuous across
+    // adjacent keystroke events.
+    if (event.kind === "ui.snapshot") return;
 
     if (event.kind === "keyboard.text_input") {
       if (isSecureInput(event)) return;
@@ -689,7 +786,7 @@ export async function run(
       if (captureAfterNavigation) {
         await new Promise<void>((resolve) => setTimeout(resolve, NAVIGATION_SETTLE_MS));
       }
-      await appendEvent({ ...normalizeKeyBurst([event], args), subjects }, captureAfterNavigation);
+      await appendEvent({ ...normalizeKeyBurst([event], args), subjects, source: event.captureSource }, captureAfterNavigation);
       return;
     }
 
@@ -701,6 +798,7 @@ export async function run(
         timestamp: event.timestamp,
         application,
         subjects,
+        source: event.captureSource,
       }, true);
       return;
     }
@@ -712,6 +810,7 @@ export async function run(
         timestamp: event.timestamp,
         application,
         subjects,
+        source: event.captureSource,
         details: {
           button: event.mouse?.button ?? "left",
           clickCount: event.mouse?.clickCount ?? 1,
@@ -728,6 +827,7 @@ export async function run(
         timestamp: event.timestamp,
         application,
         subjects,
+        source: event.captureSource,
         details: {
           origin: event.mouse?.origin?.element ?? null,
           destination: event.mouse?.destination?.element ?? null,
@@ -747,6 +847,7 @@ export async function run(
         timestamp: event.timestamp,
         application,
         subjects,
+        source: event.captureSource,
         details: {
           characterCount: [...selectedText].length,
           ...(retain
@@ -758,69 +859,198 @@ export async function run(
     }
   };
 
+  const captureSession = new CaptureStreamSession();
+  let helperReadyResolve!: () => void;
+  let helperReadyReject!: (error: Error) => void;
+  const helperReady = new Promise<void>((resolve, reject) => {
+    helperReadyResolve = resolve;
+    helperReadyReject = reject;
+  });
+  let requestedStopReason: string | null = null;
+  let stoppedRecordWritten = false;
+  let protocolFailure: Error | null = null;
+  let heartbeatWatchdog: ReturnType<typeof setTimeout> | null = null;
+  const armHeartbeatWatchdog = () => {
+    if (heartbeatWatchdog) clearTimeout(heartbeatWatchdog);
+    if (stopping || captureSession.isStopped) {
+      heartbeatWatchdog = null;
+      return;
+    }
+    heartbeatWatchdog = setTimeout(() => {
+      heartbeatWatchdog = null;
+      protocolFailure = new Error("capture helper sent no protocol message for 90 seconds");
+      if (!helper.killed) helper.kill("SIGTERM");
+    }, 90_000);
+    heartbeatWatchdog.unref?.();
+  };
+  const helper = spawn(binary, ["--capture-protocol-v1"], { stdio: ["pipe", "pipe", "pipe"] });
+  helper.once("close", childClosedResolve);
+
+  const persistStopped = async (reason: string) => {
+    if (stoppedRecordWritten || !metadataWritten) return;
+    await processing;
+    await flushKeys();
+    await appendEvent({ eventType: "recording_stopped", details: { reason } });
+    stoppedRecordWritten = true;
+  };
+
   const finish = (reason: string): Promise<void> => {
     if (finishPromise) return finishPromise;
+    requestedStopReason = reason;
     finishPromise = (async () => {
       stopping = true;
+      if (heartbeatWatchdog) clearTimeout(heartbeatWatchdog);
+      heartbeatWatchdog = null;
       terminalLines?.close();
       if (pendingKeyTimer) clearTimeout(pendingKeyTimer);
-      // Only ever called from handlers registered after the helper starts.
-      if (!helper.killed) helper.kill("SIGTERM");
-      await Promise.race([
-        childClosed,
-        new Promise<void>((resolve) => setTimeout(resolve, 500)),
-      ]);
+      if (helper.pid && !helper.killed && !captureSession.isStopped && helper.stdin.writable) {
+        helper.stdin.write(`${JSON.stringify({ v: 1, type: "stop" })}\n`);
+      }
+      const waitForClose = async (milliseconds: number) => {
+        let timer: ReturnType<typeof setTimeout> | undefined;
+        try {
+          return await Promise.race([
+            childClosed.then(() => true),
+            new Promise<boolean>((resolve) => { timer = setTimeout(() => resolve(false), milliseconds); }),
+          ]);
+        } finally { if (timer) clearTimeout(timer); }
+      };
+      if (!await waitForClose(8_000)) {
+        helper.kill("SIGTERM");
+        if (!await waitForClose(2_000)) {
+          helper.kill("SIGKILL");
+          if (!await waitForClose(2_000)) throw new Error("capture helper did not exit after SIGKILL");
+        }
+      }
+      await messageProcessing;
       await processing;
       await flushKeys();
-      // Shutdown has no fresh native app/window envelope to authorize a
-      // screenshot; keep its control marker without capturing the desktop.
-      await appendEvent({
-        eventType: "recording_stopped",
-        details: { reason },
-      });
+      if (metadataWritten && !stoppedRecordWritten) {
+        await persistStopped(protocolFailure ? `capture_error:${protocolFailure.message}` : reason);
+      }
+      if (!captureSession.isStopped && !protocolFailure) {
+        protocolFailure = new Error("capture helper exited without a stopped message");
+      }
+      if (!metadataWritten && !protocolFailure) protocolFailure = new Error("capture helper exited before ready");
       console.log(`\nrecording written: ${output}`);
       console.log(`events: ${sequence}`);
+      if (protocolFailure) throw protocolFailure;
     })();
     return finishPromise;
   };
 
-  const helper = spawn(binary, [], { stdio: ["ignore", "pipe", "pipe"] });
-  helper.once("close", childClosedResolve);
-  const lines = readline.createInterface({ input: helper.stdout });
-  lines.on("line", (line: string) => {
-    try {
-      const event = JSON.parse(line);
+  const processMessage = async (line: string) => {
+    const message = captureSession.accept(line);
+    armHeartbeatWatchdog();
+    if (message.type === "ready") {
+      if (message.platform !== "macos") throw new Error(`expected macOS helper, got ${message.platform}`);
+      writeMetadata();
+      await appendEvent({
+        eventType: "recording_started",
+        timestamp: startedAt,
+        application: { name: "Computer History", bundleId: "computer-history" },
+        details: { goal: args.title ?? "Human-operated macOS workflow" },
+      });
+      console.log(`[recorder] goal: ${args.title ?? "Human-operated macOS workflow"}`);
+      console.log(`[recorder] output: ${output}`);
+      console.log("[recorder] recording now; keep the final result visible and press control+option+cmd+r to stop.");
+      console.log("[recorder] fallback: return here and press Enter or Ctrl+C.");
+      if (process.send) process.send({ type: "computer-history-ready", runId: message.runId });
+      helperReadyResolve();
+      return;
+    }
+    if (message.type === "event") {
+      const event = captureEventToLegacy(message);
       if (isStopHotkey(event)) {
-        stopFromHotkey?.();
+        if (stopFromHotkey) stopFromHotkey();
+        else pendingStopHotkey = true;
         return;
       }
       processing = processing.then(safely(() => ingest(event)));
-    } catch (error) {
-      console.error(`[recorder] ignored malformed helper event: ${(error as Error).message}`);
+      return;
     }
-  });
-  helper.stderr.on("data", (chunk: Buffer) => process.stderr.write(chunk));
-
-  console.log(`[recorder] goal: ${args.title ?? "Human-operated macOS workflow"}`);
-  console.log(`[recorder] output: ${output}`);
-  console.log("[recorder] recording now; keep the final result visible and press control+option+cmd+r to stop.");
-  console.log("[recorder] fallback: return here and press Enter or Ctrl+C.");
-
-  await new Promise<void>((resolve, reject) => {
-    const onSignal = () => finish("user_interrupt").then(resolve, reject);
-    process.once("SIGINT", onSignal);
-    process.once("SIGTERM", onSignal);
-    stopFromHotkey = () => finish("stop_hotkey").then(resolve, reject);
-    if (process.stdin.isTTY) {
-      terminalLines = readline.createInterface({ input: process.stdin, output: process.stdout });
-      terminalLines.once("line", () => finish("user_stop").then(resolve, reject));
+    if (message.type === "gap") {
+      await processing;
+      axBaseline = null;
+      await flushKeys();
+      await appendEvent({
+        eventType: "capture_gap",
+        details: { fromSequence: message.fromSequence, toSequence: message.toSequence, reason: message.reason },
+        source: { runId: message.runId, sequence: message.toSequence },
+      });
+      return;
     }
-    helper.once("error", reject);
-    helper.once("exit", (code, signal) => {
-      if (stopping) return;
-      finish(`helper_exit:${code ?? signal ?? "unknown"}`).then(resolve, reject);
+    if (message.type === "fatal") throw new Error(`capture helper ${message.code}: ${message.message}`);
+    if (message.type === "stopped") {
+      if (heartbeatWatchdog) clearTimeout(heartbeatWatchdog);
+      heartbeatWatchdog = null;
+      const reason = message.reason === "hotkey" ? "stop_hotkey"
+        : message.reason === "permission_lost" ? "permission_lost"
+          : requestedStopReason ?? "user_interrupt";
+      await persistStopped(reason);
+    }
+  };
+
+  const lines = readline.createInterface({ input: helper.stdout });
+  let messageProcessing: Promise<void> = Promise.resolve();
+  lines.on("line", (line: string) => {
+    messageProcessing = messageProcessing.then(() => processMessage(line)).catch((error) => {
+      protocolFailure = error instanceof Error ? error : new Error(String(error));
+      helperReadyReject(protocolFailure);
+      if (!helper.killed) helper.kill("SIGTERM");
     });
   });
+  helper.stderr.on("data", (chunk: Buffer) => process.stderr.write(chunk));
+  helper.once("error", (error) => helperReadyReject(error));
+  helper.once("exit", (code, signal) => {
+    if (!captureSession.currentRunId) helperReadyReject(new Error(`capture helper exited before ready (${code ?? signal ?? "unknown"})`));
+    if (stopping) return;
+    void childClosed.then(() => messageProcessing).then(() => {
+      const reason = captureSession.isStopped ? "user_interrupt" : `helper_exit:${code ?? signal ?? "unknown"}`;
+      return finish(reason);
+    }).then(resolveRunCompletion, (error) => {
+      protocolFailure = error instanceof Error ? error : new Error(String(error));
+      rejectRunCompletion(protocolFailure);
+    });
+  });
+
+  let readyTimer: ReturnType<typeof setTimeout> | null = setTimeout(() => {
+    const error = new Error("capture helper did not send ready within 10 seconds");
+    protocolFailure = error;
+    helperReadyReject(error);
+    helper.kill("SIGTERM");
+  }, 10_000);
+  try {
+    await helperReady;
+  } catch (error) {
+    await finish("capture_start_failed").catch(() => undefined);
+    throw error;
+  } finally {
+    if (readyTimer) clearTimeout(readyTimer);
+    readyTimer = null;
+  }
+
+  const onSignal = () => {
+    void finish("user_interrupt").then(resolveRunCompletion, rejectRunCompletion);
+  };
+  process.once("SIGINT", onSignal);
+  process.once("SIGTERM", onSignal);
+  stopFromHotkey = () => {
+    void finish("stop_hotkey").then(resolveRunCompletion, rejectRunCompletion);
+  };
+  if (pendingStopHotkey) {
+    pendingStopHotkey = false;
+    stopFromHotkey();
+  }
+  if (process.stdin.isTTY) {
+    terminalLines = readline.createInterface({ input: process.stdin, output: process.stdout });
+    terminalLines.once("line", () => {
+      void finish("user_stop").then(resolveRunCompletion, rejectRunCompletion);
+    });
+  }
+  await runCompletion;
+  process.removeListener("SIGINT", onSignal);
+  process.removeListener("SIGTERM", onSignal);
   return { output, recordingId, events: sequence };
 }
 

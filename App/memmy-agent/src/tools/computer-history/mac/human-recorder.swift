@@ -4,6 +4,15 @@ import Carbon.HIToolbox
 import CoreGraphics
 import Foundation
 
+let captureProtocolMode = CommandLine.arguments.contains("--capture-protocol-v1")
+let captureRunId = UUID().uuidString.lowercased()
+let captureMaxLineBytes = 1_048_576
+var captureSequence = 0
+var captureReadySent = false
+var captureStopReason = "requested"
+var capturePageKey: String?
+let captureSequenceLock = NSLock()
+
 let emitLock = NSLock()
 
 func emit(_ payload: [String: Any]) {
@@ -28,6 +37,53 @@ func applicationPayload(_ application: NSRunningApplication? = NSWorkspace.share
 
 func timestamp() -> String {
   ISO8601DateFormatter().string(from: Date())
+}
+
+func emitCapture(_ payload: [String: Any], sequenceForGap: Int? = nil) {
+  guard JSONSerialization.isValidJSONObject(payload),
+        let data = try? JSONSerialization.data(withJSONObject: payload),
+        data.count <= captureMaxLineBytes,
+        let line = String(data: data, encoding: .utf8)
+  else {
+    if let sequenceForGap {
+      emit(["v": 1, "type": "gap", "runId": captureRunId,
+            "fromSequence": sequenceForGap, "toSequence": sequenceForGap,
+            "reason": "enrichment_failed"])
+    }
+    return
+  }
+  emitLock.lock()
+  print(line)
+  fflush(stdout)
+  emitLock.unlock()
+}
+
+func nextCaptureSequence() -> Int {
+  captureSequenceLock.lock(); defer { captureSequenceLock.unlock() }
+  captureSequence += 1
+  return captureSequence
+}
+
+func nextCaptureRange(count: Int) -> (Int, Int) {
+  captureSequenceLock.lock(); defer { captureSequenceLock.unlock() }
+  let first = captureSequence + 1
+  captureSequence += count
+  return (first, captureSequence)
+}
+
+func emitOverflowGap(count: Int) {
+  guard captureProtocolMode, count > 0 else { return }
+  let range = nextCaptureRange(count: count)
+  emitCapture(["v": 1, "type": "gap", "runId": captureRunId,
+               "fromSequence": range.0, "toSequence": range.1,
+               "reason": "overflow"])
+}
+
+func sendCaptureReady() {
+  guard captureProtocolMode, !captureReadySent else { return }
+  captureReadySent = true
+  emitCapture(["v": 1, "type": "ready", "runId": captureRunId, "platform": "macos",
+               "capabilities": ["pointer", "keyboard", "ui_tree", "selected_text", "browser_url", "private_window_detection"]])
 }
 
 func modifierNames(_ flags: CGEventFlags) -> [String] {
@@ -323,6 +379,48 @@ var focusedElementGeneration: UInt64 = 0
 let enrichmentQueue = DispatchQueue(label: "human-recorder.enrichment")
 let enrichmentQueueKey = DispatchSpecificKey<Bool>()
 enrichmentQueue.setSpecific(key: enrichmentQueueKey, value: true)
+let captureQueueLock = NSLock()
+let maximumPendingCaptureWork = 512
+var pendingCaptureWork = 0
+var droppedCaptureWork = 0
+
+func enqueueCaptureWork(_ work: @escaping () -> Void) {
+  captureQueueLock.lock()
+  guard pendingCaptureWork < maximumPendingCaptureWork else {
+    droppedCaptureWork += 1
+    captureQueueLock.unlock()
+    return
+  }
+  pendingCaptureWork += 1
+  let earlierDrops = droppedCaptureWork
+  droppedCaptureWork = 0
+  captureQueueLock.unlock()
+  enrichmentQueue.async {
+    if earlierDrops > 0 { emitOverflowGap(count: earlierDrops) }
+    work()
+    captureQueueLock.lock()
+    pendingCaptureWork -= 1
+    captureQueueLock.unlock()
+  }
+}
+
+func flushDroppedCaptureWork() {
+  captureQueueLock.lock()
+  let dropped = droppedCaptureWork
+  droppedCaptureWork = 0
+  captureQueueLock.unlock()
+  emitOverflowGap(count: dropped)
+}
+
+func shouldSkipUiEnrichmentForBacklog() -> Bool {
+  captureQueueLock.lock(); defer { captureQueueLock.unlock() }
+  return pendingCaptureWork >= maximumPendingCaptureWork / 2
+}
+
+func enqueueRecorderWork(_ work: @escaping () -> Void) {
+  if captureProtocolMode { enqueueCaptureWork(work) }
+  else { enrichmentQueue.async(execute: work) }
+}
 // These caches and the AX sampling clock are owned by enrichmentQueue.
 var privacyWindow: AXUIElement?
 var privacyWindowPid: pid_t?
@@ -392,7 +490,187 @@ func applicationEnvelope(_ application: [String: Any]? = nil) -> [String: Any] {
   var payload: [String: Any] = ["secureInput": secureInputActive()]
   if let name = source["name"] { payload["name"] = name }
   if let bundleId = source["bundleId"] { payload["bundleIdentifier"] = bundleId }
+  if let pid = source["pid"] as? pid_t { payload["pid"] = Int(pid) }
   return payload
+}
+
+func semanticRole(_ nativeRole: String) -> String {
+  switch nativeRole {
+  case "AXApplication": return "application"
+  case "AXWindow": return "window"
+  case "AXButton", "AXPopUpButton", "AXMenuButton": return "button"
+  case "AXRadioButton": return "radio_button"
+  case "AXCheckBox": return "checkbox"
+  case "AXTextField", "AXTextArea", "AXComboBox": return "text_field"
+  case "AXSearchField": return "search_field"
+  case "AXLink": return "link"
+  case "AXMenuItem": return "menu_item"
+  case "AXTabButton": return "tab"
+  case "AXSlider": return "slider"
+  case "AXStaticText": return "text"
+  case "AXHeading": return "heading"
+  case "AXWebArea": return "document"
+  case "AXGroup", "AXLayoutArea": return "group"
+  case "AXTable": return "table"
+  case "AXRow": return "row"
+  case "AXCell": return "cell"
+  case "AXList": return "list"
+  case "AXUnknown": return "unknown"
+  default: return "unknown"
+  }
+}
+
+func captureNode(_ value: [String: Any]) -> [String: Any] {
+  let nativeRole = value["role"] as? String ?? value["subrole"] as? String ?? "AXUnknown"
+  let subrole = value["subrole"] as? String ?? ""
+  let password = nativeRole == "AXSecureTextField" || subrole == "AXSecureTextField"
+  var node: [String: Any] = ["role": semanticRole(nativeRole), "nativeRole": nativeRole, "isPassword": password]
+  if let name = value["title"] as? String, !name.isEmpty { node["name"] = String(name.prefix(240)) }
+  if let description = value["description"] as? String, !description.isEmpty { node["description"] = String(description.prefix(240)) }
+  if let identifier = value["identifier"] as? String, !identifier.isEmpty { node["automationId"] = String(identifier.prefix(512)) }
+  if !password, let fieldValue = value["value"] as? String, !fieldValue.isEmpty { node["value"] = String(fieldValue.prefix(240)) }
+  return node
+}
+
+func captureTarget(_ value: Any?) -> [String: Any]? {
+  guard let value = value as? [String: Any] else { return nil }
+  let element = (value["element"] as? [String: Any]) ?? value
+  var target: [String: Any] = ["element": captureNode(element)]
+  for key in ["ancestors", "descendants"] {
+    if let values = value[key] as? [[String: Any]], !values.isEmpty {
+      target[key] = values.prefix(32).map(captureNode)
+    }
+  }
+  return target
+}
+
+func captureContext(_ payload: [String: Any]) -> [String: Any]? {
+  let app = payload["app"] as? [String: Any] ?? [:]
+  let window = payload["window"] as? [String: Any] ?? [:]
+  guard let name = app["name"] as? String,
+        let bundleId = app["bundleIdentifier"] as? String,
+        !bundleId.isEmpty, bundleId != "unknown",
+        let pid = app["pid"] as? Int
+  else { return nil }
+  let browser = window["browser"] as? Bool == true
+  var page: [String: Any] = ["state": "unknown"]
+  if let rawUrl = window["url"] as? String, let safeUrl = sanitizedPageUrl(rawUrl) {
+    page = ["state": "known", "url": safeUrl]
+  }
+  let windowId = window["id"] as? String ?? "pid:\(pid):window:unknown"
+  let title: Any = window["title"] as? String ?? NSNull()
+  return [
+    "application": ["id": "bundle:\(bundleId)", "idKind": "bundle_id", "name": String(name.prefix(240)), "pid": pid],
+    "window": ["id": windowId, "title": title, "isBrowser": browser, "page": page],
+    "privacy": [
+      "secureInput": app["secureInput"] as? Bool == true,
+      "passwordTarget": false,
+      "privateWindow": window["privateBrowsing"] as? Bool == true ? "yes" : "unknown",
+      "systemSurface": ["com.apple.loginwindow", "com.apple.ScreenSaver.Engine"].contains(bundleId),
+    ],
+  ]
+}
+
+func emitCaptureEvent(_ payload: [String: Any], kind: String, data: [String: Any]) {
+  let sequence = nextCaptureSequence()
+  guard var context = captureContext(payload) else {
+    emitCapture(["v": 1, "type": "gap", "runId": captureRunId,
+                 "fromSequence": sequence, "toSequence": sequence,
+                 "reason": "enrichment_failed"])
+    return
+  }
+  let target = data["target"] as? [String: Any]
+  let targetNode = target?["element"] as? [String: Any]
+  if var privacy = context["privacy"] as? [String: Any] {
+    privacy["passwordTarget"] = targetNode?["isPassword"] as? Bool == true
+    context["privacy"] = privacy
+  }
+  emitCapture(["v": 1, "type": "event", "runId": captureRunId, "sequence": sequence,
+               "occurredAt": payload["timestamp"] as? String ?? timestamp(),
+               "kind": kind, "context": context, "data": data], sequenceForGap: sequence)
+}
+
+func emitProtocolPayload(_ payload: [String: Any]) {
+  // The event tap is enabled just before the startup snapshot is queued, so a
+  // user event can win that race. Any first event must still be preceded by
+  // the one required ready message.
+  sendCaptureReady()
+  let oldKind = payload["kind"] as? String ?? ""
+  if oldKind == "session.started" {
+    emitCaptureEvent(payload, kind: "window.changed", data: [:])
+  } else if oldKind == "session.ended" {
+    return
+  }
+
+  if let ax = payload["ax"] as? [String: Any],
+     let nodes = ax["nodes"] as? [[String: Any]], !nodes.isEmpty {
+    emitCaptureEvent(payload, kind: "ui.snapshot", data: [
+      "windowKey": ax["windowKey"] as? String ?? "unknown-window",
+      "nodes": nodes.map(captureNode),
+    ])
+  }
+
+  let window = payload["window"] as? [String: Any] ?? [:]
+  let pageKey = "\(window["id"] as? String ?? ""): \(window["url"] as? String ?? "")"
+  if window["url"] is String, pageKey != capturePageKey {
+    capturePageKey = pageKey
+    emitCaptureEvent(payload, kind: "page.changed", data: [:])
+  }
+
+  switch oldKind {
+  case "window.changed":
+    emitCaptureEvent(payload, kind: "window.changed", data: [:])
+  case "mouse.click", "mouse.context_menu":
+    let mouse = payload["mouse"] as? [String: Any] ?? [:]
+    let button = mouse["button"] as? String ?? (oldKind == "mouse.context_menu" ? "right" : "left")
+    emitCaptureEvent(payload, kind: "pointer.click", data: [
+      "button": button, "clickCount": mouse["clickCount"] as? Int ?? 1,
+      "target": captureTarget(mouse["target"]) ?? NSNull(),
+    ])
+  case "mouse.drag":
+    let mouse = payload["mouse"] as? [String: Any] ?? [:]
+    emitCaptureEvent(payload, kind: "pointer.drag", data: [
+      "origin": captureTarget(mouse["origin"]) ?? NSNull(),
+      "destination": captureTarget(mouse["destination"]) ?? NSNull(),
+    ])
+  case "keyboard.shortcut":
+    let keyboard = payload["keyboard"] as? [String: Any] ?? [:]
+    let rawModifiers = keyboard["modifiers"] as? [String] ?? []
+    let modifiers = rawModifiers.compactMap { value -> String? in
+      switch value { case "cmd": return "meta"; case "option": return "alt"; case "control", "shift": return value; default: return nil }
+    }
+    let key = (keyboard["keyCode"] as? Int) == 15 ? "keycode-15" : keyboard["keyEquivalent"] as? String ?? "unknown"
+    emitCaptureEvent(payload, kind: "keyboard.shortcut", data: [
+      "key": key, "modifiers": modifiers, "target": captureTarget(keyboard["target"]) ?? NSNull(),
+    ])
+  case "keyboard.submit":
+    let keyboard = payload["keyboard"] as? [String: Any] ?? [:]
+    emitCaptureEvent(payload, kind: "keyboard.submit", data: ["target": captureTarget(keyboard["target"]) ?? NSNull()])
+  case "keyboard.text_input":
+    let keyboard = payload["keyboard"] as? [String: Any] ?? [:]
+    let context = captureContext(payload)?["privacy"] as? [String: Any] ?? [:]
+    let target = captureTarget(keyboard["target"])
+    let targetNode = target?["element"] as? [String: Any]
+    if context["secureInput"] as? Bool != true && targetNode?["isPassword"] as? Bool != true {
+      emitCaptureEvent(payload, kind: "keyboard.text", data: [
+        "text": keyboard["text"] as? String ?? "", "target": target ?? NSNull(),
+      ])
+    }
+  case "selection.changed":
+    let selection = payload["selection"] as? [String: Any] ?? [:]
+    let target = captureTarget(selection["target"])
+    let targetNode = target?["element"] as? [String: Any]
+    let privacy = captureContext(payload)?["privacy"] as? [String: Any] ?? [:]
+    let sensitiveTarget = privacy["secureInput"] as? Bool == true
+      || privacy["passwordTarget"] as? Bool == true
+      || targetNode?["isPassword"] as? Bool == true
+    let selected = sensitiveTarget ? nil : selection["selectedText"] as? String
+    emitCaptureEvent(payload, kind: "selection.changed", data: [
+      "selectedText": selected as Any? ?? NSNull(), "target": captureTarget(selection["target"]) ?? NSNull(),
+    ])
+  default:
+    break
+  }
 }
 
 func emitEvent(kind: String, application: [String: Any]? = nil, extra: [String: Any]) {
@@ -413,7 +691,11 @@ func emitEvent(kind: String, application: [String: Any]? = nil, extra: [String: 
     // navigation. Never reuse an earlier URL when the lookup fails.
     if let element = context.element, window["privateBrowsing"] as? Bool != true {
       let windowKey = "\(pid):\(CFHash(element)):\(window["url"] as? String ?? "")"
-      if let ax = axSnapshot(window: element, windowKey: windowKey) {
+      if captureProtocolMode && shouldSkipUiEnrichmentForBacklog() {
+        // Keep the interaction event and report the intentionally dropped
+        // semantic snapshot. A later full snapshot re-establishes the baseline.
+        emitOverflowGap(count: 1)
+      } else if let ax = axSnapshot(window: element, windowKey: windowKey) {
         // Navigation during tree traversal must not attach the new page's
         // contents to a previously allowed URL.
         if browserBundleIds.contains(bundleId),
@@ -427,10 +709,11 @@ func emitEvent(kind: String, application: [String: Any]? = nil, extra: [String: 
     }
     guard NSWorkspace.shared.frontmostApplication?.processIdentifier == pid else { return }
     for (key, value) in extra { payload[key] = value }
-    emit(payload)
+    if captureProtocolMode { emitProtocolPayload(payload) }
+    else { emit(payload) }
   }
   if DispatchQueue.getSpecific(key: enrichmentQueueKey) == true { capture() }
-  else { enrichmentQueue.async(execute: capture) }
+  else { enqueueRecorderWork(capture) }
 }
 
 func currentWindow(pid: pid_t, bundleId: String) -> (payload: [String: Any], element: AXUIElement?) {
@@ -443,6 +726,7 @@ func currentWindow(pid: pid_t, bundleId: String) -> (payload: [String: Any], ele
   var payload: [String: Any] = [:]
   if browserBundleIds.contains(bundleId) { payload["browser"] = true }
   guard let window = axElement(windowRef) else { return (payload, nil) }
+  payload["id"] = "pid:\(pid):window:\(CFHash(window))"
   if let title = accessibilityString(window, kAXTitleAttribute as CFString) { payload["title"] = title }
   if browserBundleIds.contains(bundleId), let url = browserPage(window: window).url {
     payload["url"] = url
@@ -533,6 +817,24 @@ func axTreeLines(window: AXUIElement) -> [String] {
   return lines
 }
 
+func axTreeNodes(window: AXUIElement) -> [[String: Any]] {
+  var nodes: [[String: Any]] = []
+  var queue: [AXUIElement] = [window]
+  var visited = 0
+  while !queue.isEmpty && visited < AX_TREE_MAX_NODES {
+    let current = queue.removeFirst()
+    visited += 1
+    let payload = nodePayload(current)
+    if hasSemanticLabel(payload) { nodes.append(payload) }
+    var childrenRef: CFTypeRef?
+    if AXUIElementCopyAttributeValue(current, kAXChildrenAttribute as CFString, &childrenRef) == .success,
+       let children = childrenRef as? [AXUIElement] {
+      queue.append(contentsOf: children.prefix(24))
+    }
+  }
+  return nodes
+}
+
 // Returns nil when the snapshot was taken recently enough that recomputing it
 // would cost more than the freshness is worth.
 func axSnapshot(window: AXUIElement, windowKey: String) -> [String: Any]? {
@@ -544,7 +846,7 @@ func axSnapshot(window: AXUIElement, windowKey: String) -> [String: Any]? {
   guard !lines.isEmpty else { return nil }
   lastTreeKey = windowKey
   lastTreeAt = now
-  return ["mode": "fullTree", "windowKey": windowKey, "text": lines.joined(separator: "\n")]
+  return ["mode": "fullTree", "windowKey": windowKey, "text": lines.joined(separator: "\n"), "nodes": axTreeNodes(window: window)]
 }
 
 let axObserverCallback: AXObserverCallback = { _, element, notification, _ in
@@ -665,7 +967,7 @@ let callback: CGEventTapCallBack = { _, type, event, _ in
     let button = type == .rightMouseDown ? "right" : "left"
     let modifiers = modifierList(event)
     let application = applicationPayload()
-    enrichmentQueue.async {
+    enqueueRecorderWork {
       var target = resolveTarget(at: point)
       if target.isEmpty { target = ["role": "AXUnknown"] }
       if type == .leftMouseDown { dragOrigin = (point, target) }
@@ -680,7 +982,7 @@ let callback: CGEventTapCallBack = { _, type, event, _ in
   case .leftMouseUp:
     let point = event.location
     let application = applicationPayload()
-    enrichmentQueue.async {
+    enqueueRecorderWork {
       guard let origin = dragOrigin else { return }
       dragOrigin = nil
       let dx = point.x - origin.point.x
@@ -702,7 +1004,7 @@ let callback: CGEventTapCallBack = { _, type, event, _ in
     let application = applicationPayload()
     let secure = secureInputActive()
     let focus = captureFocusSnapshot()
-    enrichmentQueue.async {
+    enqueueRecorderWork {
       let target = keyboardTarget(snapshot: focus, pid: application["pid"] as? pid_t)
       guard let classified = classifiedKeyboard(keyCode: keyCode, text: text, modifiers: modifiers, secure: secure),
             let kind = classified["kind"] as? String,
@@ -747,6 +1049,9 @@ guard let tap = CGEvent.tapCreate(
   exit(2)
 }
 eventTap = tap
+// Announce readiness once permissions and the tap are established, even if
+// there is temporarily no frontmost application to produce a snapshot.
+if captureProtocolMode { enrichmentQueue.async { sendCaptureReady() } }
 
 let workspaceObserver = NSWorkspace.shared.notificationCenter.addObserver(
   forName: NSWorkspace.didActivateApplicationNotification,
@@ -767,13 +1072,81 @@ if let pid = applicationPayload()["pid"] as? pid_t { observeApplication(pid: pid
 emitEvent(kind: "session.started", extra: [:])
 
 signal(SIGTERM) { _ in
-  emitEvent(kind: "session.ended", extra: [:])
-  exit(0)
+  if captureProtocolMode {
+    DispatchQueue.main.async {
+      captureStopReason = "requested"
+      CFRunLoopStop(CFRunLoopGetMain())
+    }
+  } else {
+    emitEvent(kind: "session.ended", extra: [:])
+    exit(0)
+  }
 }
 signal(SIGINT) { _ in
-  emitEvent(kind: "session.ended", extra: [:])
-  exit(0)
+  if captureProtocolMode {
+    DispatchQueue.main.async {
+      captureStopReason = "requested"
+      CFRunLoopStop(CFRunLoopGetMain())
+    }
+  } else {
+    emitEvent(kind: "session.ended", extra: [:])
+    exit(0)
+  }
+}
+
+var captureHeartbeatTimer: Timer?
+if captureProtocolMode {
+  DispatchQueue.global(qos: .utility).async {
+    while let line = readLine() {
+      guard let data = line.data(using: .utf8),
+            let message = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+            message["v"] as? Int == 1,
+            message["type"] as? String == "stop"
+      else { continue }
+      DispatchQueue.main.async {
+        captureStopReason = "requested"
+        CFRunLoopStop(CFRunLoopGetMain())
+      }
+      return
+    }
+    DispatchQueue.main.async {
+      captureStopReason = "requested"
+      CFRunLoopStop(CFRunLoopGetMain())
+    }
+  }
+  captureHeartbeatTimer = Timer.scheduledTimer(withTimeInterval: 30, repeats: true) { _ in
+    enrichmentQueue.async {
+      captureSequenceLock.lock()
+      let lastSequence = captureSequence
+      captureSequenceLock.unlock()
+      emitCapture(["v": 1, "type": "heartbeat", "runId": captureRunId, "lastSequence": lastSequence])
+    }
+  }
 }
 
 CFRunLoopRun()
 NSWorkspace.shared.notificationCenter.removeObserver(workspaceObserver)
+if captureProtocolMode {
+  captureHeartbeatTimer?.invalidate()
+  CGEvent.tapEnable(tap: tap, enable: false)
+  if let observer = observedObserver {
+    CFRunLoopRemoveSource(CFRunLoopGetMain(), AXObserverGetRunLoopSource(observer), .defaultMode)
+  }
+  // Queued browser privacy checks synchronously call the main queue. Keep
+  // servicing it while draining instead of blocking it with queue.sync.
+  let drained = DispatchGroup()
+  drained.enter()
+  enrichmentQueue.async {
+    flushDroppedCaptureWork()
+    drained.leave()
+  }
+  while drained.wait(timeout: .now()) != .success {
+    CFRunLoopRunInMode(.defaultMode, 0.01, false)
+  }
+  captureSequenceLock.lock()
+  let lastSequence = captureSequence
+  captureSequenceLock.unlock()
+  emitCapture(["v": 1, "type": "stopped", "runId": captureRunId,
+               "lastSequence": lastSequence, "reason": captureStopReason])
+  exit(0)
+}

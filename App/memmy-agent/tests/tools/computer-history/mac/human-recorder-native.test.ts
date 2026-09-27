@@ -15,6 +15,8 @@ test.runIf(process.platform === "darwin")("native capture classifies text safely
   const classifier = source.slice(source.indexOf("let keyNames:"), source.indexOf("func characters("));
   const browserPage = source.slice(source.indexOf("func browserPage("), source.indexOf("// MARK: - Secure input"));
   const sanitizeUrl = source.slice(source.indexOf("func sanitizedPageUrl("), source.indexOf("func webAreaUrl("));
+  const envelope = source.slice(source.indexOf("func applicationEnvelope("), source.indexOf("func semanticRole("));
+  const context = source.slice(source.indexOf("func captureContext("), source.indexOf("func emitCaptureEvent("));
   const directory = fs.mkdtempSync(path.join(os.tmpdir(), "recorder-native-"));
   const script = path.join(directory, "classification.swift");
   fs.writeFileSync(script, `import Foundation\n${classifier}\n
@@ -34,6 +36,12 @@ func AXUIElementCopyAttributeValue(_ element: AXUIElement, _ attribute: String, 
 }
 ${sanitizeUrl}
 ${browserPage}
+func secureInputActive() -> Bool { false }
+func applicationPayload() -> [String: Any] { [:] }
+${envelope}
+${context}
+let nativeApp: [String: Any] = ["name": "Notes", "bundleId": "com.apple.Notes", "pid": Int32(123)]
+let protocolContext = captureContext(["app": applicationEnvelope(nativeApp), "window": ["title": "Note"]])
 let page = AXUIElement(["role": "AXWebArea", "url": "https://example.com/"])
 let window = AXUIElement(["role": "AXWindow", "title": "Browser", "children": [page]])
 var urls: [Any] = [browserPage(window: window).url as Any? ?? NSNull()]
@@ -49,7 +57,7 @@ let inputs: [(Int, String, [String], Bool)] = [
   (8, "c", ["cmd"], false), (48, "\\t", [], false)
 ]
 let results: [Any] = inputs.map { classifiedKeyboard(keyCode: $0.0, text: $0.1, modifiers: $0.2, secure: $0.3) as Any? ?? NSNull() }
-let data = try JSONSerialization.data(withJSONObject: ["keys": results, "urls": urls])
+let data = try JSONSerialization.data(withJSONObject: ["keys": results, "urls": urls, "context": protocolContext as Any? ?? NSNull()])
 print(String(data: data, encoding: .utf8)!)
 `);
   try {
@@ -57,6 +65,7 @@ print(String(data: data, encoding: .utf8)!)
       path.join(os.tmpdir(), "memmy-recorder-test-swift-cache"), script], { encoding: "utf8", timeout: 60_000 });
     const parsed = JSON.parse(output);
     const results = parsed.keys;
+    assert.deepEqual(parsed.context.application, { id: "bundle:com.apple.Notes", idKind: "bundle_id", name: "Notes", pid: 123 });
     assert.deepEqual(parsed.urls, ["https://example.com/", "https://bank.com/", null]);
     assert.deepEqual(results.slice(0, 4).map((result: any) => [result.kind, result.keyboard.text]), [
       ["keyboard.text_input", "A"], ["keyboard.text_input", "!"],
@@ -101,6 +110,7 @@ final class CGEvent {
 }
 typealias CGEventTapCallBack = (Int, EventType, CGEvent, Any?) -> Unmanaged<CGEvent>?
 let enrichmentQueue = DispatchQueue(label: "native-event-test.enrichment")
+func enqueueRecorderWork(_ work: @escaping () -> Void) { enrichmentQueue.async(execute: work) }
 var eventTap: Int? = nil
 var dragOrigin: (point: CGPoint, target: [String: Any])?
 typealias AXUIElement = String

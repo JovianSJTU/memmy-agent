@@ -1,4 +1,5 @@
 import type { LLMRuntimeResolver } from "../../../utils/llm-runtime.js";
+import { normalizeHistoryRecord } from "../core/history-format.js";
 import { redactSensitive } from "./summarize-history.js";
 
 // Codex writes each history entry as a short title plus two or three sentences
@@ -292,7 +293,9 @@ function directLabel(node: Record<string, unknown> | undefined): string | null {
   if (!node) return null;
   // A password field is never named by its contents; anything else may be,
   // with credentials masked.
-  const keys = node.subrole === "AXSecureTextField" ? ["title", "description"] : ["title", "description", "value"];
+  const keys = node.isPassword === true || node.subrole === "AXSecureTextField"
+    ? ["name", "title", "description"]
+    : ["name", "title", "description", "value"];
   for (const key of keys) {
     const value = node[key];
     if (typeof value === "string" && value.trim()) {
@@ -341,7 +344,7 @@ export function compactEventEvidence(lines: string[]): string {
   for (const line of lines) {
     if (!line.trim()) continue;
     try {
-      events.push(JSON.parse(line) as HistoryEvent);
+      events.push(normalizeHistoryRecord(JSON.parse(line)) as HistoryEvent);
     } catch {
       // A truncated final line is expected while a segment is still open.
     }

@@ -80,6 +80,13 @@ var lastTreeKey: String?
 var lastTreeAt: Date?
 var fixtureLines: [String] = []
 func axTreeLines(window: AXUIElement) -> [String] { fixtureLines }
+func axTreeNodes(window: AXUIElement) -> [[String: Any]] {
+  fixtureLines.map { line in
+    let fields = line.components(separatedBy: "||")
+    return ["role": fields.first ?? "AXUnknown", "title": fields.dropFirst().first ?? ""]
+  }
+}
+func enqueueRecorderWork(_ work: @escaping () -> Void) { enrichmentQueue.async(execute: work) }
 ${classifier}
 ${focus}
 ${resolver}

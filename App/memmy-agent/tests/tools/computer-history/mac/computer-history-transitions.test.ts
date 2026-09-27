@@ -16,10 +16,17 @@ class RecorderChild extends EventEmitter {
   kill(signal: string) { this.signals.push(signal); return true; }
   exit(code = 0) { this.exitCode = code; this.emit("exit", code); }
 }
-const state = vi.hoisted(() => ({ children: [] as RecorderChild[] }));
+const state = vi.hoisted(() => ({ children: [] as RecorderChild[], autoReady: true }));
 vi.mock("node:child_process", async (original) => ({
   ...await original<typeof import("node:child_process")>(),
-  spawn: () => { const child = new RecorderChild(); state.children.push(child); return child; },
+  spawn: () => {
+    const child = new RecorderChild();
+    state.children.push(child);
+    if (state.autoReady) setTimeout(() => child.emit("message", {
+      type: "computer-history-ready", runId: "9d303f41-d994-4f5c-a907-5fb6e5fbe111",
+    }), 0);
+    return child;
+  },
 }));
 import { ComputerHistoryDemoService } from "../../../../src/tools/computer-history/mac/computer-history-api.js";
 
@@ -29,6 +36,7 @@ beforeEach(() => {
   vi.useFakeTimers();
   vi.setSystemTime(new Date("2026-09-13T00:01:00Z"));
   state.children.length = 0;
+  state.autoReady = true;
   root = fs.mkdtempSync(path.join(os.tmpdir(), "history-transitions-"));
   const recorderScript = path.join(root, "unused.js");
   fs.writeFileSync(recorderScript, "// spawn is replaced by an inert child");
@@ -46,6 +54,28 @@ afterEach(async () => {
 });
 
 describe("recorder transition ordering", () => {
+  it("waits for the helper's protocol ready message before reporting a checked start", async () => {
+    state.autoReady = false;
+    vi.spyOn(service, "checkPermissions").mockResolvedValue({
+      supported: true, accessibility: true, inputMonitoring: true,
+    });
+    let settled = false;
+    const starting = service.startObservationWithPermissions().then((snapshot) => {
+      settled = true;
+      return snapshot;
+    });
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(state.children).toHaveLength(1);
+    expect(settled).toBe(false);
+    state.children[0].emit("message", {
+      type: "computer-history-ready", runId: "9d303f41-d994-4f5c-a907-5fb6e5fbe111",
+    });
+    const snapshot = await starting;
+    expect(snapshot.observation.state).toBe("running");
+    expect(settled).toBe(true);
+  });
+
   function writeStop(reason: string) {
     const id = service.snapshot().observation.segmentId!;
     const file = path.join(root, "recordings", "segments", id, "events.jsonl");
@@ -259,7 +289,7 @@ describe("clearing the active recording", () => {
     state.children[0].exit();
     const cleared = await clear;
     expect(cleared.histories).toEqual([]);
-    expect(cleared.observation.state).toBe("running");
+    expect(cleared.observation.state).toBe("starting");
     expect(state.children).toHaveLength(2);
     expect(fs.existsSync(history)).toBe(false);
     expect(fs.existsSync(events)).toBe(false);
@@ -344,7 +374,7 @@ describe("clearing the active recording", () => {
     const result = await clear;
     expect(result.histories).toEqual([]);
     expect(fs.existsSync(history)).toBe(false);
-    expect(result.observation.state).toBe("running");
+    expect(result.observation.state).toBe("starting");
     expect(state.children).toHaveLength(3);
   });
 });

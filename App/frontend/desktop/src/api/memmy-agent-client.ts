@@ -90,7 +90,7 @@ export type ComputerHistoryWorkflow = {
 
 export type ComputerHistorySnapshot = {
   observation: {
-    state: "running" | "paused" | "stopped" | "stopping" | "failed";
+    state: "starting" | "running" | "paused" | "stopped" | "stopping" | "failed";
     startedAt: string | null;
     segmentId: string | null;
     segmentStartedAt: string | null;

@@ -219,7 +219,7 @@ export function ComputerHistorySubPage(props: ComputerHistorySubPageProps) {
 
   useEffect(() => {
     const state = snapshot?.observation.state;
-    const intervalMs = state === "running" || state === "stopping" ? 1500 : 5000;
+    const intervalMs = state === "starting" || state === "running" || state === "stopping" ? 1500 : 5000;
     const timer = window.setInterval(() => void refresh(), intervalMs);
     return () => window.clearInterval(timer);
   }, [refresh, snapshot?.observation.state]);
@@ -235,7 +235,8 @@ export function ComputerHistorySubPage(props: ComputerHistorySubPageProps) {
 
   const days = useMemo(() => groupByDay(snapshot?.histories ?? [], t), [snapshot?.histories, t]);
   const observationState = snapshot?.observation.state ?? "stopped";
-  const recording = observationState === "running" || observationState === "stopping";
+  const starting = observationState === "starting";
+  const recording = starting || observationState === "running" || observationState === "stopping";
   const paused = observationState === "paused";
   const observationError = snapshot?.observation.error;
   const recordingError = observationError
@@ -399,7 +400,7 @@ export function ComputerHistorySubPage(props: ComputerHistorySubPageProps) {
               role="status"
             >
               <span className="ch__recording-status-dot" aria-hidden="true" />
-              {t(quotaExhausted ? "computerHistory.tokensExhausted" : paused ? "computerHistory.paused" : "computerHistory.recording")}
+              {t(quotaExhausted ? "computerHistory.tokensExhausted" : paused ? "computerHistory.paused" : starting ? "computerHistory.starting" : "computerHistory.recording")}
             </span>
           ) : null}
           <div className="ch__menu" ref={clearMenuRef}>

@@ -35,6 +35,7 @@ heartbeat();
 setInterval(heartbeat, 20);
 process.once("SIGTERM", () => setTimeout(() => process.exit(0), 150));
 fs.writeFileSync(output + "." + process.pid + ".ready", "ready");
+process.send?.({ type: "computer-history-ready", runId: "9d303f41-d994-4f5c-a907-5fb6e5fbe111" });
 `, "utf8");
     const service = new ComputerHistoryDemoService({
       recorderScript,
@@ -57,6 +58,7 @@ fs.writeFileSync(output + "." + process.pid + ".ready", "ready");
       expect(child.spawnargs[1]).toBe(recorderScript);
       expect(child.pid).toBeGreaterThan(0);
       await waitUntil(() => fs.existsSync(`${eventsFile}.${child.pid}.ready`));
+      await waitUntil(() => service.snapshot().observation.state === "running");
       const before = fs.statSync(eventsFile).size;
       await waitUntil(() => fs.statSync(eventsFile).size > before);
       return { child, eventsFile };
