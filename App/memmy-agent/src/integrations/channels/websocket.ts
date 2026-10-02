@@ -108,8 +108,9 @@ import {
   ComputerHistoryApiError,
   getComputerHistoryDemoService,
   clientSnapshot,
-} from "../../tools/computer-history/mac/computer-history-api.js";
-import type { ComputerHistoryDemoService } from "../../tools/computer-history/mac/computer-history-api.js";
+} from "../../tools/computer-history/computer-history-api.js";
+import type { ComputerHistoryDemoService } from "../../tools/computer-history/core/computer-history-api.js";
+import { getWindowsComputerHistoryService } from "../../tools/computer-history/win/computer-history-api.js";
 import { isComputerHistorySupported } from "../../tools/computer-history/platform.js";
 import {
   removeSessionDagFiles,
@@ -2739,6 +2740,7 @@ export class WebSocketChannel extends BaseChannel {
     if (got === "/api/settings") return this.handleSettings(request);
     if (got === "/api/commands") return this.handleCommands(request);
     if (got === "/api/computer-history") return this.handleComputerHistory(request, "snapshot");
+    if (got === "/api/computer-history/windows/settings") return this.handleWindowsHistorySettings(request);
     if (got === "/api/computer-history/permissions/check") return this.handleComputerHistory(request, "permissions-check");
     if (got === "/api/computer-history/permissions/open") return this.handleComputerHistory(request, "permissions-open");
     if (got === "/api/computer-history/delete") return this.handleComputerHistory(request, "history-delete");
@@ -2896,7 +2898,7 @@ export class WebSocketChannel extends BaseChannel {
    */
   async handleComputerHistoryAppIcon(request: any): Promise<HttpLikeResponse> {
     if (!this.checkApiToken(request)) return httpError(401, "Unauthorized");
-    if (!isComputerHistorySupported()) return httpError(400, "Computer History is available only on macOS");
+    if (!isComputerHistorySupported()) return httpError(400, "Computer History is available on macOS and Windows");
     if ((request.method ?? "GET").toUpperCase() !== "GET") return httpError(405, "method not allowed");
     // The router carries the path, query and all, on `request.path`; there is
     // no `request.url` here, and reading one silently loses every parameter.
@@ -2915,7 +2917,7 @@ export class WebSocketChannel extends BaseChannel {
     action: "snapshot" | "model-select" | "permissions-check" | "permissions-open" | "history-delete" | "history-clear" | "history-pin" | "import" | "observation-start" | "observation-pause" | "observation-resume" | "observation-stop" | "workflow-create",
   ): Promise<HttpLikeResponse> {
     if (!this.checkApiToken(request)) return httpError(401, "Unauthorized");
-    if (!isComputerHistorySupported()) return httpError(400, "Computer History is available only on macOS");
+    if (!isComputerHistorySupported()) return httpError(400, "Computer History is available on macOS and Windows");
     const method = (request.method ?? "GET").toUpperCase();
     if (action === "snapshot") {
       return method === "GET"
@@ -3010,6 +3012,24 @@ export class WebSocketChannel extends BaseChannel {
     } catch (error) {
       if (error instanceof ComputerHistoryApiError) return httpError(error.status, error.message);
       return httpError(500, error instanceof Error ? error.message : String(error));
+    }
+  }
+
+  async handleWindowsHistorySettings(request: any): Promise<HttpLikeResponse> {
+    if (!this.checkApiToken(request)) return httpError(401, "Unauthorized");
+    if (process.platform !== "win32") return httpError(400, "Windows Computer History settings require Windows");
+    const service = getWindowsComputerHistoryService();
+    try {
+      if ((request.method ?? "GET").toUpperCase() === "GET") return httpJsonResponse(await service.getWindowsConfiguration());
+      if ((request.method ?? "GET").toUpperCase() !== "POST") return httpError(405, "method not allowed");
+      const raw = requestBodyText(request);
+      if (Buffer.byteLength(raw, "utf8") > 256 * 1024) return httpError(413, "settings are too large");
+      let body;
+      try { body = JSON.parse(raw); } catch { return httpError(400, "body must be JSON"); }
+      return httpJsonResponse(await service.updateWindowsSettings(body?.settings));
+    } catch (error) {
+      return httpError(error instanceof ComputerHistoryApiError ? error.status : 503,
+        error instanceof ComputerHistoryApiError ? error.message : "Windows Computer History configuration is unavailable");
     }
   }
 

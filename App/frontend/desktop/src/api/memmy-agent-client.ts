@@ -10,6 +10,9 @@ import {
   ApplicationIconSchema,
   ComputerHistorySnapshotSchema,
   ComputerHistoryPermissionsSchema,
+  WindowsHistoryConfigurationSchema,
+  type WindowsHistorySettings,
+  type WindowsHistoryConfiguration,
   type ComputerHistoryPermission,
   type ComputerHistoryPermissions,
 } from "./computer-history-contract.js";
@@ -708,6 +711,8 @@ export interface MemmyAgentClient {
   bootstrap(options?: { force?: boolean }): Promise<MemmyAgentBootstrap>;
   getSettings(): Promise<MemmyAgentSettings>;
   getComputerHistory(): Promise<ComputerHistorySnapshot>;
+  getWindowsHistoryConfiguration(): Promise<WindowsHistoryConfiguration>;
+  updateWindowsHistorySettings(settings: WindowsHistorySettings): Promise<WindowsHistoryConfiguration>;
   setComputerHistoryModel(preset: string | null): Promise<ComputerHistorySnapshot>;
   checkComputerHistoryPermissions(): Promise<ComputerHistoryPermissions>;
   openComputerHistoryPermission(permission: ComputerHistoryPermission, mode?: "request" | "settings"): Promise<ComputerHistoryPermissions>;
@@ -1068,6 +1073,12 @@ class HttpMemmyAgentClient implements MemmyAgentClient {
 
   async getComputerHistory(): Promise<ComputerHistorySnapshot> {
     return this.request("/api/computer-history", ComputerHistorySnapshotSchema);
+  }
+  async getWindowsHistoryConfiguration() {
+    return this.request("/api/computer-history/windows/settings", WindowsHistoryConfigurationSchema);
+  }
+  async updateWindowsHistorySettings(settings: WindowsHistorySettings) {
+    return this.request("/api/computer-history/windows/settings", WindowsHistoryConfigurationSchema, { method: "POST", body: { settings } });
   }
 
   async deleteComputerHistory(historyId: string): Promise<ComputerHistorySnapshot> {

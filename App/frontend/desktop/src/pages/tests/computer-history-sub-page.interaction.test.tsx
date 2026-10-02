@@ -60,6 +60,29 @@ describe("ComputerHistorySubPage", () => {
     return client;
   };
 
+  it("uses explicit Windows application setup and keeps cancellation closed across polls", async () => {
+    vi.useFakeTimers();
+    window.memmy = { platform: "win32" } as NonNullable<Window["memmy"]>;
+    const permissions = { supported: true, platform: "windows" as const, ready: false, accessibility: false, inputMonitoring: false, reason: "authorization_required" as const };
+    const missing = snapshot({ observation: { ...snapshot().observation, permissions } });
+    const client = await renderWith(snapshot(), {
+      getComputerHistory: vi.fn().mockResolvedValue(missing),
+      startComputerHistoryObservation: vi.fn().mockResolvedValue(missing),
+      getWindowsHistoryConfiguration: vi.fn().mockResolvedValue({ settings: { version: 1, applications: [] }, applications: [], permissions }),
+      openComputerHistoryPermission: vi.fn(),
+    });
+    act(() => container.querySelector<HTMLButtonElement>('[role="switch"]')!.click());
+    expect(document.body.textContent).toContain("你明确选择的应用中的操作");
+    await act(async () => confirmationButton()!.click());
+    expect(document.querySelector(".ch__permission-dialog")?.textContent).toContain("记录的应用");
+    expect(document.querySelector(".ch__permission-dialog")?.textContent).not.toContain("两项权限");
+    expect(client.openComputerHistoryPermission).not.toHaveBeenCalled();
+    await act(async () => document.querySelector<HTMLButtonElement>('.ch__permission-dialog button[aria-label="关闭"]')!.click());
+    await act(async () => vi.advanceTimersByTimeAsync(5000));
+    expect(document.querySelector(".ch__permission-dialog")).toBeNull();
+    expect(readHistoryPermissionSetup()).toBeNull();
+  });
+
   it("shows missing permissions as setup, and cancellation survives subsequent polls and actions", async () => {
     vi.useFakeTimers();
     const missing = snapshot({ observation: { ...snapshot().observation, permissions: { supported: true, accessibility: false, inputMonitoring: false } } });

@@ -47,6 +47,7 @@ afterEach(() => {
 
 describe("Computer History settings tools", () => {
   it("registers all three tools alongside retrieval", () => {
+    vi.spyOn(process, "platform", "get").mockReturnValue("darwin");
     vi.spyOn(historyPlatform, "isComputerHistorySupported").mockReturnValue(true);
     vi.stubEnv("MEMMY_COMPUTER_HISTORY", undefined);
     const registry = new ToolLoader({

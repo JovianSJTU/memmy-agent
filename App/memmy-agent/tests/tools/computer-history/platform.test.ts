@@ -12,6 +12,7 @@ const service = vi.hoisted(() => ({ get: vi.fn(() => ({})) }));
 vi.mock("../../../src/tools/computer-history/mac/computer-history-api.js", () => ({
   getComputerHistoryDemoService: service.get,
 }));
+vi.mock("../../../src/tools/computer-history/win/computer-history-api.js", () => ({ getWindowsComputerHistoryService: service.get }));
 
 const classes = [ComputerHistoryTool, ComputerHistoryStatusTool, ComputerHistoryGetSettingsTool, ComputerHistoryUpdateSettingsTool];
 const names = ["computer_history", "computer_history_status", "computer_history_get_settings", "computer_history_update_settings"];
@@ -21,7 +22,7 @@ afterEach(() => {
   service.get.mockClear();
 });
 
-describe.each(["win32", "linux"] as const)("Computer History unavailable on %s", (platform) => {
+describe.each(["linux"] as const)("Computer History unavailable on %s", (platform) => {
   it.each([undefined, "1", "0"])("cannot register or invoke tools with MEMMY_COMPUTER_HISTORY=%s", async (enabled) => {
     vi.spyOn(process, "platform", "get").mockReturnValue(platform);
     vi.stubEnv("MEMMY_COMPUTER_HISTORY", enabled);
@@ -35,6 +36,23 @@ describe.each(["win32", "linux"] as const)("Computer History unavailable on %s",
       await expect(registry.execute(name, {})).resolves.toContain(`Tool '${name}' not found`);
     }
     expect(service.get).not.toHaveBeenCalled();
+  });
+});
+
+describe("Computer History Windows availability", () => {
+  it("registers retrieval without exposing macOS settings commands", () => {
+    vi.spyOn(process, "platform", "get").mockReturnValue("win32");
+    vi.stubEnv("MEMMY_COMPUTER_HISTORY", undefined);
+    expect(isComputerHistorySupported()).toBe(true);
+    expect(ComputerHistoryTool.enabled()).toBe(true);
+    for (const cls of classes.slice(1)) expect(cls.enabled()).toBe(false);
+    expect(new ToolLoader({ testClasses: classes }).loadRegistry().toolNames).toEqual(["computer_history"]);
+    expect(service.get).toHaveBeenCalledOnce();
+  });
+  it("respects Windows opt-out", () => {
+    vi.spyOn(process, "platform", "get").mockReturnValue("win32");
+    vi.stubEnv("MEMMY_COMPUTER_HISTORY", "0");
+    expect(new ToolLoader({ testClasses: classes }).loadRegistry().toolNames).toEqual([]);
   });
 });
 

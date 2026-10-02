@@ -36,7 +36,7 @@ export class ComputerHistoryStatusTool extends Tool {
   }
 
   static enabled(): boolean {
-    return isComputerHistorySupported() && process.env.MEMMY_COMPUTER_HISTORY !== "0";
+    return process.platform === "darwin" && isComputerHistorySupported() && process.env.MEMMY_COMPUTER_HISTORY !== "0";
   }
 
   get name(): string { return "computer_history_status"; }
@@ -89,7 +89,7 @@ export class ComputerHistoryGetSettingsTool extends Tool {
   }
 
   static enabled(): boolean {
-    return isComputerHistorySupported() && process.env.MEMMY_COMPUTER_HISTORY !== "0";
+    return process.platform === "darwin" && isComputerHistorySupported() && process.env.MEMMY_COMPUTER_HISTORY !== "0";
   }
 
   get name(): string { return "computer_history_get_settings"; }
@@ -130,7 +130,7 @@ export class ComputerHistoryUpdateSettingsTool extends Tool {
   }
 
   static enabled(): boolean {
-    return isComputerHistorySupported() && process.env.MEMMY_COMPUTER_HISTORY !== "0";
+    return process.platform === "darwin" && isComputerHistorySupported() && process.env.MEMMY_COMPUTER_HISTORY !== "0";
   }
 
   get name(): string { return "computer_history_update_settings"; }

@@ -1,7 +1,7 @@
 // @vitest-environment happy-dom
 import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
-import { afterEach, beforeEach, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { useComputerHistoryModelSync } from "../computer-history-model-sync.js";
 
 (globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
@@ -20,6 +20,11 @@ beforeEach(() => {
   root = createRoot(host);
 });
 afterEach(() => { act(() => root.unmount()); host.remove(); delete window.memmy; vi.useRealTimers(); vi.restoreAllMocks(); });
+
+describe.each(["darwin", "win32"])("History model synchronization on %s", (platform) => {
+beforeEach(() => {
+  Object.defineProperty(window, "memmy", { configurable: true, value: { platform } });
+});
 
 it("syncs default and explicit models, refreshes settings changes and stops on unmount", async () => {
   const client = { setComputerHistoryModel: vi.fn().mockResolvedValue({}) };
@@ -74,7 +79,9 @@ it("does not let an inactive window overwrite the selected model", async () => {
   expect(client.setComputerHistoryModel).toHaveBeenCalledOnce();
 });
 
-it.each(["win32", "linux", undefined])("never syncs or retries History on an unsupported/unknown host: %s", async (platform) => {
+});
+
+it.each(["linux", undefined])("never syncs or retries History on an unsupported/unknown host: %s", async (platform) => {
   Object.defineProperty(window, "memmy", { configurable: true, value: platform ? { platform } : undefined });
   const client = { setComputerHistoryModel: vi.fn().mockRejectedValue(new Error("unsupported")) };
   await act(async () => root.render(<Harness client={client} enabled preset="custom" revision="v1"/>));

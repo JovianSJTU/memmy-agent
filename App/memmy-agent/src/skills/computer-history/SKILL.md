@@ -18,7 +18,7 @@ did I do this morning" — or refers to Computer History directly.
 
 ## First, find out where the data is and whether it is fresh
 
-Call `computer_history_status`. It returns:
+On macOS, call `computer_history_status`. It returns:
 
 - `state` — `running`, `paused` or `stopped`. If it is stopped and the user
   expects today's activity, say so rather than reporting an empty result as if
@@ -30,6 +30,12 @@ Call `computer_history_status`. It returns:
 
 Compare the current date against what you find before treating anything as
 today's activity.
+
+On Windows, the status/settings tools above are not registered. Use
+`computer_history` to locate retained summaries and event streams, and ask the
+user to check the Computer History page for current recording state. Recording
+requires explicit application selection in its Windows settings dialog; a missing
+summary does not establish that recording was running or that nothing happened.
 
 ## The two layers
 
@@ -72,6 +78,16 @@ then read the matching windows. Useful fields on each event:
 - `details.url` — the page, with query and fragment already stripped
 - `details.text` — typed text, when the observation policy retained it
 - `timestamp` — UTC
+
+Windows uses `application.id` / `.executable` instead of `bundleId`, and
+`accessibility.nodes` for authorized UIA snapshot text. `providerOffscreen` is a
+provider report, not proof of pixel visibility or reading. `mouse_click`, `scroll`
+and `key_press` with `details.source=low_level_hook` are observed input metadata;
+they do not identify a clicked element or establish an action's effect. An
+`injected` event may come from software. Windows `text_input` with
+`details.unit=key_press` counts redacted key presses, never resulting characters;
+ordinary input text and passwords are not retained. Known browsers are unsupported
+on Windows. Never infer browser URLs or private-window behavior from this data.
 
 **Read events selectively.** A single line can carry a whole accessibility tree
 and run to tens of thousands of characters. Prefer `grep` with a pattern over
