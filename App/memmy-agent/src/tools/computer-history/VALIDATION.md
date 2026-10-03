@@ -261,7 +261,7 @@ Windows 的进程树强制终止绕过了 Agent 异步 shutdown。现于 Desktop
 
 新安装版于本地 **17:03:02** 启动，实际页面与 UI Automation 树均显示主页面，未刷新。`09:03:12.736 UTC` 收到 `main-ready-to-show`，耗时 **9,006 ms**，随后 boot ready，见 `exit-drain-installed/startup-acceptance.json`。打包后的开发目录 SQLite 已恢复 Node 24.21.0 / ABI 137，真实查询通过；包内保留 Electron ABI 139。
 
-录制中的正常托盘退出修复仍需本次安装版复验结果。IME、多屏/DPI、锁屏、长时间稳定性、正式签名及既有 Windows 浏览器/Office/WPS 限制继续保留。
+录制中的正常托盘退出修复仍需本次安装版复验结果。本地 **17:09:29** 五分钟等待窗口结束时，Desktop、Agent 和 collector 仍在运行，故 `exit-drain-installed/exit-processes.json` 的退出标志为 false；这是新包退出动作尚未完成的等待超时，不能算退出成功或一次产品退出失败。待退出后需重新保存进程证据，并验证停止事件发生在实际 `quit:cleanup-start` 之后，不能以十分钟轮转的 `stop_command` 代替最终退出事件。当前唯一 fixture 仍在受控录制，测试范围尚未恢复；用户原 Windows settings 文件不存在，实际退出及阴性标记审计后应恢复其原先不存在的状态并关闭 fixture/host。未强制结束 App、采集器或用户允许常驻的 Memory。IME、多屏/DPI、锁屏、长时间稳定性、正式签名及既有 Windows 浏览器/Office/WPS 限制继续保留。
 
 ## 交付边界
 
