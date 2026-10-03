@@ -195,7 +195,7 @@ Windows NSIS 构建现在使用 `-ProductionOnly` 编译静态 CRT 的 Release h
 
 验收结束后通过生产 API 恢复有效原范围，并恢复原 Windows settings 文件不存在的状态；store 按调用重新读取文件，不需修改现有用户配置或历史。测试窗口/host 已关闭，App 保持打开且采集停止，合成历史保留。安装前关闭旧 App 用的是强制进程树清理，仅为替换文件前准备，**不代表正常退出验收**。
 
-### 尚需手动或后续验证
+### 6fe3655f 阶段的待验项（后续结果见下文）
 
 1. 实体键盘：在受控测试范围启动记录，真实按下 `Ctrl+Alt+Shift+R`，确认 UI 停止、JSONL 的停止原因及 collector 退出；本轮仅有 C++/安装版组件的软件注入结果。原生 paused 热键通过不证明产品服务 paused 热键，因为服务暂停会关闭 recorder。
 2. 正常退出：在受控录制中右键系统托盘 Memmy 图标→“退出 Memmy”，确认 Desktop/Agent/recorder 全部结束、事件文件稳定、无强制退出告警。当前桌面工具无法定位托盘菜单；窗口右上角关闭按现有逻辑隐藏 App，不能视为退出。
@@ -261,11 +261,24 @@ Windows 的进程树强制终止绕过了 Agent 异步 shutdown。现于 Desktop
 
 新安装版于本地 **17:03:02** 启动，实际页面与 UI Automation 树均显示主页面，未刷新。`09:03:12.736 UTC` 收到 `main-ready-to-show`，耗时 **9,006 ms**，随后 boot ready，见 `exit-drain-installed/startup-acceptance.json`。打包后的开发目录 SQLite 已恢复 Node 24.21.0 / ABI 137，真实查询通过；包内保留 Electron ABI 139。
 
-录制中的正常托盘退出修复仍需本次安装版复验结果。本地 **17:09:29** 五分钟等待窗口结束时，Desktop、Agent 和 collector 仍在运行，故 `exit-drain-installed/exit-processes.json` 的退出标志为 false；这是新包退出动作尚未完成的等待超时，不能算退出成功或一次产品退出失败。待退出后需重新保存进程证据，并验证停止事件发生在实际 `quit:cleanup-start` 之后，不能以十分钟轮转的 `stop_command` 代替最终退出事件。当前唯一 fixture 仍在受控录制，测试范围尚未恢复；用户原 Windows settings 文件不存在，实际退出及阴性标记审计后应恢复其原先不存在的状态并关闭 fixture/host。未强制结束 App、采集器或用户允许常驻的 Memory。IME、多屏/DPI、锁屏、长时间稳定性、正式签名及既有 Windows 浏览器/Office/WPS 限制继续保留。
+### 最终安装版托盘退出与清理结果
+
+本地 **17:09:29** 五分钟等待窗口结束时 App 仍在录制；原等待报告现保留为 `exit-drain-installed/exit-processes-wait-timeout.json`，不能算一次产品退出失败。用户随后于本地 **17:52:10** 完成真实托盘退出，重新采样的 `exit-processes.json` 确认 Desktop、Agent、recorder 均已退出。
+
+实际退出核心审计为 **9 通过、0 失败、1 未确认**，见 `exit-drain-installed/exit-acceptance.json`。这属于安装版合成范围的实际操作验收，与 74 项自动回归、组件预检及先前真实模型/检索结果分别统计。
+
+- `09:52:10.673 UTC` 记录 Desktop `quit:cleanup-start`，`09:52:10.685 UTC` 写入最终 `recording_stopped / stop_command`，相隔 **12 ms**；明确检查事件在真实退出开始之后，未将十分钟轮转停止代替最终结束。修复前遗漏结束事件的失败证据仍保留。
+- 本次唯一 fixture 从 `09:04:01.903 UTC` 运行至最终停止，持续 **48 分 8.782 秒**，覆盖六个 UTC 对齐分段及五次十分钟轮转；六段均有开始/停止，内容应用均为 fixture，阳性标记存在，普通 Edit、密码、子节点及敏感 ID 明文均未落盘。这只是单一合成窗口样本，未记录全过程资源曲线，不能据此宣称日常应用长期稳定性已完成。
+- 实际退出后向仍打开的 fixture 写入阴性标记，命令响应确认成功，六个文件分别保持 **3,395 / 3,390 / 3,390 / 3,390 / 3,390 / 3,390 bytes**，阴性标记均未落盘。见 `negative-command-confirmed-final.json` 和 `synthetic-events.jsonl`。
+- 剩余 PID **18784** 是 Memory；runtime/lock 一致，只读查询 App SQLite 确认 `stop_memory_service_on_exit = 0`，符合用户的常驻设置，未强制结束。见 `memory-exit-policy.json`。本机操作工具未发送强制终止，但这本身不证明 Desktop 内部未触发兜底。
+- 持久化启动日志无 `quit:cleanup-failed`。**是否触发过 5 秒强制退出兜底仍未确认**：Desktop 使用的 `console.info/warn` 未由 `initLogger` 转发至 `electron-log` 文件，现有成功提示及超时告警没有持久证据。最初审计脚本错误要求 `main.log` 含收尾成功提示，因而失败，原脚本和 `exit-audit-first-result.json` 均保留；正式报告将日志可观测性列为未确认，未把删除日志断言当作全绿，也未据没有告警宣称无兜底。后续需增加持久化的收尾完成/兜底标记，并在下一测试包实测。
+
+本地 **17:57:15** 已完成恢复：核对当前 settings 与本轮合成范围完全一致后，恢复原 Windows settings 文件不存在的状态；fixture 和 Node host 正常关闭，App 保持退出，采集器为 0，保留用户历史、凭据、退出设置及允许常驻的 Memory。见 `controlled-settings-before-restoration.json`、`settings-restored.json`、`final-cleanup.json`。本轮没有新增模型请求计数或聊天端到端检索验收。IME、多屏/DPI、锁屏、真实应用长期稳定性、正式签名及既有 Windows 浏览器/Office/WPS 限制继续保留。
 
 ## 交付边界
 
 - Windows EXE 的构建、包内固定路径、必要许可证及 unsigned NSIS 分发已接入；正式代码签名尚未验收。
 - Windows 实体停止热键已有一次真实安装版通过证据；IME、多显示器/DPI、系统锁屏行为、真实应用兼容性和长时间采集仍待验收。
+- 录制中的托盘退出已确认最终事件排空、进程清理及停止后的阴性标记；5 秒退出兜底是否触发仍缺持久化日志证据，不能宣称该项通过。
 - Windows 已知浏览器仍拒绝采集；Office/WPS 正文选择器和应用图标尚未产品化。
 - 受控组件/fixture、真实安装版 UI、真实模型请求和聊天端到端检索属于不同层级，不能互相代替或合并计数。
