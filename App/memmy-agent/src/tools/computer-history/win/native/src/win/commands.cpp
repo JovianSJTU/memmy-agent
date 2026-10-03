@@ -705,6 +705,10 @@ class Observer {
     nextSample_ = start + command_.sampleMs;
     MarkPending("session_start");
     for (;;) {
+      if (hooks_.StopRequested()) {
+        stopReason_ = "stop_hotkey";
+        return;
+      }
       if (outputFailed_) {
         stopReason_ = "output_failed";
         return;
@@ -737,6 +741,10 @@ class Observer {
         return;
       }
       if (!HandleControl()) return;
+      if (hooks_.StopRequested()) {
+        stopReason_ = "stop_hotkey";
+        return;
+      }
 
       bool overflowed = false;
       const auto triggers = hooks_.Queue().Drain(overflowed);

@@ -23,12 +23,13 @@ const limits = z.object({
   workerTimeoutMs: z.number().int().min(200).max(30000).default(1500),
 }).strict().refine((value) => value.maxVisited >= value.maxNodes && value.maxNodeTextChars <= value.maxTextChars
   && value.workerTimeoutMs > value.queryBudgetMs);
-const schema = z.object({ version: z.literal(1), applications: z.array(app).min(1).max(32),
+const schema = z.object({ version: z.literal(1), applications: z.array(app).min(1).max(512),
+  defaultApplicationBehavior: z.enum(["observe", "do_not_observe"]).optional(),
   sensitiveAutomationIds: z.array(z.string().min(1).max(256)).max(128).optional(),
   deny: z.object({ pids: z.array(z.number().int().min(1).max(0xffffffff)).max(128).optional(),
     executables: z.array(executable).max(128).optional() }).strict().optional(),
   limits: limits.optional(),
-}).strict();
+}).strict().refine((value) => value.defaultApplicationBehavior === "observe" || value.applications.length <= 32);
 
 export type NativePolicy = z.infer<typeof schema> & { limits: z.infer<typeof limits> };
 export type NativeAppRule = z.infer<typeof app>;
@@ -61,9 +62,13 @@ const browsers = new Set(["msedge.exe", "chrome.exe", "firefox.exe", "brave.exe"
   "iexplore.exe", "chromium.exe", "arc.exe", "librewolf.exe", "waterfox.exe", "thorium.exe", "floorp.exe",
   "zen.exe", "360se.exe", "360chrome.exe", "qqbrowser.exe", "sogouexplorer.exe", "2345explorer.exe",
   "liebao.exe", "msedgewebview2.exe", "tor.exe"]);
+export function isSystemSurface(executable: string): boolean {
+  const name = path.win32.basename(pathKey(executable));
+  return ["winlogon.exe", "logonui.exe", "lockapp.exe"].includes(name) || name.endsWith(".scr");
+}
 export function authorizedRule(policy: NativePolicy, context: { pid: number; executable: string; processStart: string; hwnd: string }): NativeAppRule | null {
   const key = pathKey(context.executable);
-  if (browsers.has(path.win32.basename(key)) || policy.deny?.pids?.includes(context.pid)
+  if (isSystemSurface(key) || browsers.has(path.win32.basename(key)) || policy.deny?.pids?.includes(context.pid)
       || policy.deny?.executables?.some((item) => pathKey(item) === key)) return null;
   return policy.applications.find((rule) => rule.pid === context.pid && pathKey(rule.executable) === key
     && (!rule.processStart || rule.processStart === context.processStart) && (!rule.hwnd || rule.hwnd === context.hwnd)) ?? null;
@@ -71,12 +76,16 @@ export function authorizedRule(policy: NativePolicy, context: { pid: number; exe
 
 export interface ApplicationBinding { pid: number; executable: string; processStart: string; hwnd?: string }
 export type WindowsApplicationRule = Omit<NativeAppRule, "pid" | "processStart" | "hwnd">;
-// Discovery is supplied by the host; only bindings matching an explicit persistent rule enter
-// the native allowlist. Process creation times bind permissions to each actual process instance.
+// Discovery binds the chosen application scope to actual process instances. A broad scope
+// still supplies exact PID/path/creation-time bindings; the native collector has no wildcard.
 export function compileWindowsPolicy(rules: WindowsApplicationRule[], bindings: ApplicationBinding[],
   options: Partial<Omit<NativePolicy, "applications" | "version">> = {}): NativePolicy {
   const applications = bindings.flatMap((binding) => {
-    const rule = rules.find((item) => pathKey(item.executable) === pathKey(binding.executable));
+    const key = pathKey(binding.executable);
+    if (isSystemSurface(key) || browsers.has(path.win32.basename(key)) || options.deny?.pids?.includes(binding.pid)
+        || options.deny?.executables?.some((item) => pathKey(item) === key)) return [];
+    const rule = rules.find((item) => pathKey(item.executable) === key)
+      ?? (options.defaultApplicationBehavior === "observe" ? { executable: binding.executable } : null);
     return rule ? [{ ...rule, pid: binding.pid, executable: binding.executable, processStart: binding.processStart,
       ...(binding.hwnd ? { hwnd: binding.hwnd } : {}) }] : [];
   });

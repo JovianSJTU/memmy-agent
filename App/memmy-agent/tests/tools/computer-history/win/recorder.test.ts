@@ -51,6 +51,16 @@ function setup(mode = "normal") {
     title: "Release review api_key=metadata-secret", commandTimeoutMs: 200 } };
 }
 describe("owned Windows collector lifecycle", () => {
+  it("accepts the native stop hotkey only after terminal output and clean process close", async () => {
+    const test = setup();
+    const recorder = await WindowsHistoryRecorder.start(test.options);
+    test.send({ kind: "session.stopped", reason: "stop_hotkey", hooksDetached: true, counters });
+    expect(fs.readFileSync(test.eventsFile, "utf8")).not.toContain('"eventType":"recording_stopped"');
+    test.close(0);
+    await recorder.finished;
+    expect(recorder.state).toBe("stopped");
+    expect(fs.readFileSync(test.eventsFile, "utf8")).toContain('"reason":"stop_hotkey"');
+  });
   it("records only sanitized content, pauses/resumes and completes the shared summary chain", async () => {
     const test = setup();
     const recorder = await WindowsHistoryRecorder.start(test.options);

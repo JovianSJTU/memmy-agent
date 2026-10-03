@@ -153,6 +153,11 @@ First line of every rotated segment: `segment` `{index, file}` and a `counters` 
 ends collection instead of being silently dropped. Stop/EOF always have sticky priority.
 
 ### `session.stopped` (last line)
+
+With `--input-hooks`, `Ctrl+Alt+Shift+R` requests a normal stop with reason
+`stop_hotkey`, even while paused or with an unauthorized foreground application.
+The chord is control only, not captured text or an action. Synthetic input can
+trigger it; automated injection does not prove a physical keyboard acceptance.
 `reason` (`stop_command`, `stdin_eof`, `duration_elapsed`, `parent_exited`, `console_control`,
 `output_failed`, `control_queue_overflow`, `internal_error`), `hooksDetached`, and `counters`:
 `triggers {accepted, coalesced, dropped, discarded, ignoredBackground, ignoredPaused}`,
@@ -187,7 +192,8 @@ applied. `observe` refuses to start without a valid policy, and each query re-re
 | Key | Required | Rules |
 |---|---|---|
 | `version` | yes | `1` |
-| `applications` | yes | 1–32 rules |
+| `applications` | yes | 1–32 exact instance rules; up to 512 when `defaultApplicationBehavior` is `"observe"` |
+| `defaultApplicationBehavior` | no | `"observe"` or `"do_not_observe"`; permits the larger binding list only, never a wildcard match |
 | `applications[].pid` | yes | integer 1..2^32-1 |
 | `applications[].executable` | yes | absolute path (`X:\…` or UNC). It is canonicalized before comparison (case, `/`, 8.3, links). |
 | `applications[].processStart` | no | decimal string; when present it must equal the process creation FILETIME |
@@ -202,6 +208,12 @@ applied. `observe` refuses to start without a valid policy, and each query re-re
 Selectors match control type plus exact AutomationId only. Names cannot be used as selectors in
 v1, because matching on a name would require reading it before the node is known to be
 permitted.
+
+The product host compiles its default application scope into PID/path/creation-time rules and
+refreshes them as applications open or close. The native collector still rejects every unmatched
+instance. Explicit deny rules, known browsers and login/lock/screensaver executables take
+precedence over all matching application rules. Policies without the new scope field retain the
+32-rule limit and exact-match behavior.
 
 ## Differences from the C# validation prototype
 

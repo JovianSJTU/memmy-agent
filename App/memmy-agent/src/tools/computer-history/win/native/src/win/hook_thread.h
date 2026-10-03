@@ -36,6 +36,7 @@ class HookThread {
   std::uint64_t Generation() const;
   void BumpGeneration();
   void SetPaused(bool paused);
+  bool StopRequested() const;
 
   // Round-trips a message through the hook thread so WinEvents already queued for it have been
   // dispatched before the caller compares generations. Fails closed on timeout.

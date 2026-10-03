@@ -16,15 +16,37 @@ function directory() { const root = fs.mkdtempSync(path.join(os.tmpdir(), "windo
 afterEach(() => { vi.useRealTimers(); for (const root of roots.splice(0)) fs.rmSync(root, { recursive: true, force: true }); });
 
 describe("Windows application consent", () => {
-  it("starts with no consent and rejects duplicate aliases, relative paths and Mac defaults", () => {
+  it("uses the Mac-style application scope for new profiles and rejects invalid settings", () => {
     const store = new WindowsSettingsStore(path.join(directory(), "settings.json"));
     expect(store.read().applications).toEqual([]);
+    expect(store.read().defaultApplicationBehavior).toBe("observe");
     expect(fs.existsSync(store.filePath)).toBe(false);
     for (const value of [
       { version: 1, applications: [{ executable }, { executable: executable.toUpperCase() }] },
       { version: 1, applications: [{ executable: "Fixture.exe" }] },
-      { version: 1, applications: [], defaultApplicationBehavior: "observe" },
+      { version: 1, applications: [], defaultApplicationBehavior: "invalid" },
     ]) expect(() => parseWindowsSettings(value)).toThrow();
+  });
+  it("preserves legacy selection and binds broad scopes without allowing excluded, browser or lock processes", () => {
+    const store = new WindowsSettingsStore(path.join(directory(), "settings.json"));
+    store.write({ version: 1, applications: [] });
+    expect(authorizedRule(bindSettings(store, [context]), context)).toBeNull();
+    store.write({ version: 1, defaultApplicationBehavior: "observe", applications: [], deny: { executables: [executable] } });
+    expect(authorizedRule(bindSettings(store, [context]), context)).toBeNull();
+    const other = { ...context, pid: 456, executable: "C:\\Apps\\Other.exe" };
+    const browser = { ...context, pid: 457, executable: "C:\\Apps\\chrome.exe" };
+    const locked = { ...context, pid: 458, executable: "C:\\Windows\\LockApp.exe" };
+    const policy = bindSettings(store, [context, other, browser, locked]);
+    expect(authorizedRule(policy, other)).not.toBeNull();
+    for (const denied of [context, browser, locked, { ...other, processStart: "134000000000000003" }]) expect(authorizedRule(policy, denied)).toBeNull();
+    expect(applicationCatalog([other, browser, locked], store.read()).find((app) => app.executable === other.executable)?.allowed).toBe(true);
+    expect(applicationCatalog([], store.read()).find((app) => app.executable === executable)).toMatchObject({ running: false, allowed: false });
+  });
+  it("supports more than 32 discovered instances in broad mode and still rejects oversized scopes", () => {
+    const store = new WindowsSettingsStore(path.join(directory(), "settings.json"));
+    const bindings = Array.from({ length: 512 }, (_, index) => ({ ...context, pid: index + 1, executable: `C:\\Apps\\Tool${index}.exe` }));
+    expect(bindSettings(store, bindings).applications).toHaveLength(512);
+    expect(() => bindSettings(store, [...bindings, { ...context, pid: 600 }])).toThrow("windows_policy_invalid");
   });
   it("rebinds exact instances, keeps profiles and removes authorization when apps close or consent is revoked", () => {
     const store = new WindowsSettingsStore(path.join(directory(), "settings.json"));

@@ -1,6 +1,6 @@
-# Computer History 阶段基线与 Mac 接续
+# Computer History 阶段基线与平台验收
 
-本阶段包含 Windows C++ 采集核心、TypeScript 适配、共享业务服务、Windows 应用授权与页面接入。目标是建立可重复的开发基线；安装包集成、Windows 前台交互兼容性及浏览器/Office/WPS 专项适配属于后续阶段。
+本阶段包含 Windows C++ 采集核心、TypeScript 适配、共享业务服务、Windows 应用授权与页面接入，以及 Windows 安装包接入。本文按日期保留开发基线、受控 fixture、包内组件和真实安装版操作的独立结果；浏览器/Office/WPS 专项适配不在本轮范围内。
 
 ## 统一验证入口
 
@@ -17,7 +17,7 @@ node scripts/internal/shared/validate-computer-history.mjs
 1. 编译 Knowledge、Migrations、local-api-contracts 和 desktop interface。
 2. 检查 Agent（包含测试）与前端类型，编译 Agent。
 3. 检查 History 相关源码及测试的 lint。
-4. 用两个 Vitest worker 执行共享/Mac/Windows 业务、HTTP、工作流、技能注册、前端、跨包协议与现有 Mac ASAR 布局测试。
+4. 用两个 Vitest worker 执行共享/Mac/Windows 业务、HTTP、工作流、技能注册、前端、跨包协议与 Mac/Windows ASAR 布局测试。传入 Windows 原生目录后，也执行真实 Electron 包内 EXE 检查。
 5. 检查共享 `core/summarize-history.js` 和旧 `mac/summarize-history.js` CLI 入口，构建前端。
 
 默认报告保存在系统临时目录下的新目录；可通过 `--report-dir <绝对目录>` 指定父目录。每次都会创建独立目录，保存每项检查日志、Vitest JSON 报告和总表 `results.json`。总表列出跳过的测试名称；`passed` 只表示此基线通过，不表示真机或安装包验收通过。构建输出位于 Git 忽略的 `dist` 目录。
@@ -134,9 +134,76 @@ node -e 'const Database = require("better-sqlite3"); const db = new Database(":m
 
 原生 C++ 本次只重跑上述三个入口；较早的全量 16 通过/16 前台条件跳过记录见原生 README。本次没有将完整交互套件重新验收。前端构建仍有现有的大 chunk 体积提示，不影响本阶段构建通过。
 
+## 2026-10-03 Windows 安装包与默认范围对齐
+
+验证基点为 `07a7a85d`，包含前述 Windows 核心、产品接入和 Mac SSE 修复；本节记录在该基点上的本轮工作区改动。初始工作区干净，已从用户 fork origin 安全同步；没有推送 upstream，也没有使用 Claude Code。
+
+Windows 新配置改为与 Mac 相同的默认应用范围：用户确认开启后观察支持的应用，可额外排除或切换到仅选定模式，不要求先逐项选择。已有 Windows v1 文件缺少 `defaultApplicationBehavior` 时保留原白名单；不存在文件时才使用 `observe` 默认值，且保持停止状态。产品层把范围编译为真实 PID/规范路径/进程创建时间，最多 512 个实例；原生层不接受通配匹配。密码、普通 Edit、敏感子树、已知浏览器和锁屏/登录/屏保表面继续过滤。Windows 尚不具备 Mac 浏览器 URL/网站规则或图标功能，不能将默认范围对齐称为完整功能对等。
+
+Windows NSIS 构建现在使用 `-ProductionOnly` 编译静态 CRT 的 Release helper，随包分发 EXE 和 nlohmann/json 许可证，不带源码、fixture、故障注入 EXE 或 PDB。两个 Windows builder 配置均显式解包 helper；安装版只使用 `app.asar.unpacked` 中的固定路径并忽略开发覆盖，缺少包内组件则报错。打包后校验要求实际 x64 PE 文件存在。Windows 停止热键为 `Ctrl+Alt+Shift+R`，在原生暂停或前台应用不在范围时仍可停止；停止组合键不进入内容事件。
+
+本机证据根目录：`D:/memmy-agent/App/shell/desktop/release/history-validation-20261002/`。目录与安装包被 Git 忽略，仅在本机，其他机器须重新生成。
+
+| 层级 | 实际结果与证据 |
+|---|---|
+| 最终统一自动回归 | **523 通过、0 失败、8 明确跳过**：Agent 420、前端 87、跨包/ASAR 13、原生生命周期 3。类型、lint、编译、两条摘要 CLI 和前端构建通过。总表：`final-aligned/computer-history-validation-gwQ2b0/results.json`。 |
+| 后端本地 API | **60 通过、0 失败**，包含 3 个真实 HTTP SSE 退出用例；11 个文件，独立于统一计数。`backend-local-api.json`。 |
+| 原生 Release / Debug | **各 33 个 CTest 入口通过、0 失败、0 跳过**；含实际前台 fixture、竞态/超时/父进程退出、输入钩子和停止热键。`native-release-mac-aligned.xml`、`native-debug-mac-aligned.log`，原始 Debug 证据在 `native-mac-aligned/debug/`。Release EXE 574,976 bytes（561.5 KiB），Debug 3,363,840 bytes，不随包分发。 |
+| 打包防护回归 | **28 通过、0 失败**：20 项运行时配置/ASAR 防护和 8 项版本防护，`packaging-guards-aligned.json`。新增缺 helper、非法 PE 和夹带原生测试源码的断言实际执行；3 项 Windows ASAR/Electron 检查已包含在统一计数，不重复相加。 |
+| 原生 TS 适配器最新独立复跑 | **3 通过、1 前台条件跳过**，`native-adapter-aligned-executed.json`；窗口激活失败的 `fixture-precondition.json` 保留在 `native-adapter-aligned/`。更早 `native-adapter.json` 为 4 通过；后者不是最新复跑结果。误用环境变量的一次运行 4 项明确跳过，保留在 `native-adapter-aligned.json`，不计通过。 |
+| 最终包内预检 / 安装版预检 | **各 6 项通过、0 失败**：包内 helper、默认范围就绪且不自动开始/旧空白名单拒绝、三份真实 SQLite 查询、共享摘要 CLI。`packaged-aligned-fixed/preflight.json`、`installed-aligned/preflight.json`，独立于统一计数。 |
+| 安装版产物与源码对应 | Desktop EXE、ASAR、helper 三份 SHA-256 与最终包一致；7 个 Windows 生产 JS 模块和后端 SSE 文件共 **8/8** 与当前编译产物一致。`installed-aligned-hashes.json`、`installed-source-matches-aligned.json`。 |
+| 安装版生产组件 + Win32 fixture | **14 项通过、0 失败**，`installed-components-aligned-fixed/results.json`。实际安装 Electron、包内 EXE、隔离数据目录和模型替身；不代表 Desktop UI 或真实模型。 |
+| 实际 Desktop + 真实模型 | **9 项检查通过、0 失败**，`installed-ui-aligned/real-acceptance-results.json`；实际页面开始/停止，生产 API 暂停/恢复，受控原生文字与敏感过滤、真实模型摘要和隔离副本的生产检索。实体热键、托盘正常退出仍未执行，不并入通过数。 |
+
+统一入口的 8 项跳过逐项为：Windows 不具备 POSIX 子进程信号语义；本机无文件 symlink 创建权限；Mac Swift 分类/同窗口 URL；Mac 鼠标命中/拖动；Unix helper 可执行权限；Mac 原生 ingest；Mac Electron/Swift 包内执行；Windows 前台内容用例按统一入口范围过滤。最后一项不能代替交互采集验收；Release/Debug 前台原生检查另有上述独立结果。
+
+新增“无需选应用直接开始”的页面测试首次因 mock 未返回 Promise 而失败，修正替身后全部通过；报告 `final-aligned/computer-history-validation-gLr2Sv/` 保留。没有删断言或降低隐私要求。更早的 508/517/521 基线均为不同源码阶段，不作为本轮最终计数。
+
+初始 unsigned 包的受控组件检查 `installed-components/results.json` 为 13 项通过，包括实际墙钟 06:10→06:20 UTC 分段、暂停/恢复/停止、敏感过滤、合成热键、异常 recorder 退出和受控生产检索；模型使用 fixture，没有调用真实模型，也没有代表 Desktop UI 操作。该包采用旧白名单与旧弹窗布局，保留为 `Memmy-1.1.8-win32-x64-cn-unsigned-before-picker-fix.exe`（SHA-256 `9BD93B115FF4A02E20DBFF45487B677B7E483004E543150991403E80E9F11A3C`），不能作为新默认范围的安装版证据。
+
+最终打包前的只读预检发现 SQLite ABI 缺陷：开发环境曾恢复根目录 SQLite 到 Node ABI 137，但 `.forge-meta` 仍为 `x64--139`；electron-rebuild 根据该标记跳过重建，根目录错误二进制进入包。`packaged-aligned/preflight.json` 实际加载失败，不能以打包器 exit 0 认定该包可用。失败包保留为 `Memmy-1.1.8-win32-x64-cn-unsigned-abi-failed.exe`。修复后，Windows 打包每次明确安装 Electron 目标 ABI，并在最终打包 Electron 中对 Desktop/Memory/Agent 三份 SQLite 实际执行内存查询；不再仅依赖 PE 格式或重建缓存标记。最终安装包按此流程重建，具体结果另列。
+
+### 最终安装测试包
+
+产物为 `D:/memmy-agent/App/shell/desktop/release/Memmy-1.1.8-win32-x64-cn-unsigned.exe`，版本 **1.1.8 / Windows x64 / CN phone / NotSigned**，Memory 版本 2.1.3。NSIS 大小 **355,098,553 bytes（338.6 MiB）**；原生 helper 大小 **574,976 bytes（561.5 KiB）**，无需 .NET 或目标机编译工具。该文件是本机测试包，未签名、未正式发布。
+
+| 文件 | SHA-256 |
+|---|---|
+| NSIS 安装包 | `8E666DA2FAC2EE28719154C981A8ADCB2E351468A5AD2BCDC512AD36AD31B729` |
+| Desktop Memmy.exe | `7144FE4423D18B39788EB2C9D5EFFCF07C7B0E10AB8B690857390A53EC7CBDA5` |
+| app.asar | `270356F5312FA00CB98F18B630EF15A50CA571B9C411562F5196F24EF834654C` |
+| memmy-history-recorder.exe | `2E77D871EF8F0397F0523C18FB0EAE712C5124D61AD58DA6CB02BE0F52945E1B` |
+
+使用本机已校验的 nlohmann/json header、既有完整 embedding 模型离线资源，在重新编译 Agent/前端和生产 helper 后从 Windows 构建脚本的打包阶段接续，未移除打包防护。构建日志 `win-1.1.8-x64-cn-unsigned-20261003-145357.log` 中 NSIS 已生成，但后置校验最初因 `cygpath` 不能转换 ASAR 虚拟子路径退出 1。修复为转换实际 ASAR 路径后拼接内部相对路径，重新执行完整后置校验成功，日志 `win-1.1.8-x64-cn-unsigned-20261003-152224.log`；此修复仅涉及校验脚本，包内代码未变。具体 hash 见 `final-package-hashes.json`。
+
+安装器于本地时间 2026-10-03 15:24 完成，exit 0，安装位置为 `C:/Users/zephyr/AppData/Local/Programs/Memmy`。安装版与包内三份实际文件逐一匹配，helper 固定在安装目录的 `app.asar.unpacked` 内；预检刻意提供无效 binary 覆盖和无编译工具 PATH，仍执行包内 helper。安装后实际 Desktop/Memory/Agent SQLite 查询通过。打包后开发根目录 SQLite 已恢复为 Node 24.21.0 / ABI 137，真实内存查询通过，见 `development-sqlite-restored.json`。Electron 为 38.4.0 / ABI 139，Python 为 3.12.14，C++ 为 VS 2022 v143 / MSVC 19.44 x64。
+
+### 安装版受控组件与实际界面
+
+最终 14 项组件检查使用真正的安装版生产模块和原生 helper。`applications: []`、默认 `observe` 时可直接采集 fixture；为隔离测试，其余当时运行的应用均排除，所有内容事件的 EXE 均为 fixture。实际墙钟 **07:20→07:30 UTC**（本地 15:20→15:30）跨段，旧段有边界前阳性标记且随后稳定，新段有边界后阳性标记。暂停/恢复/显式停止、合成全局停止热键、异常 recorder Node 父进程退出后进入失败、撤销范围停止均通过。模型替身产生 5 次请求，生产检索为受控调用；这些结果不属于真实模型、实体输入或聊天端到端验收。
+
+首次最终组件脚本 `installed-components-aligned/results.json` 为 6 通过、1 失败：切换 `applications: []` 时验收脚本丢失了 fixture 自定义敏感 ID `1007`，随后检查整个追加文件时发现该合成面板内容。该面板不是密码框，没有系统敏感标识。修正脚本将同一 ID 放入全局 `sensitiveAutomationIds` 后保持空应用规则，全部 14 项通过；没有改变产品过滤、删除断言或使用真实敏感数据。**密码标志、普通 Edit、脱敏正则和明确配置的敏感 ID 有过滤保证，不能声称可自动识别任意业务敏感面板。**
+
+实际 Desktop 新配置初始就绪但停止，页面直接开启时出现确认框，不要求先选应用。真实模型检查临时将范围收紧为唯一 Win32 fixture，配置搜索 `1003`、文档 `1006`、敏感子树 `1007`，保留其他应用排除，沿用本机已配置的 **BYOK gpt-5.5** preset；仅合成 QA 文字进入采集/模型。API 的 `model_preset: null` 首次返回 `model_selection_unavailable` 422，验收脚本改用已有明确 preset 后成功，没有修改凭据。模型请求未拦截，因此不报告精确请求次数。
+
+真实页面确认开始后，包内 helper 采集 Heliotrope/Friday 等合成静态文字和授权文档；生产 HTTP API 暂停/同段恢复，暂停期间文件保持 **12,978 bytes**，暂停阴性标记未落盘。实际页面开关停止后文件稳定，确认停止后阴性标记未落盘，且无原生 collector 残留。普通 Edit/子节点、密码/子节点、敏感面板和合成 API key 明文均未落盘，有 `[REDACTED]` 阳性证据。一次 UI 停止动作因工具的 `coordinate input geometry is unavailable` 失败，API 仍为 running；取得新截图后坐标点击成功，只有第二次确认停止后的标记作为阴性对照。
+
+真实模型生成并在页面显示 **Heliotrope synthetic QA fixture**，保留 Windows capture policy；内容对应合成项目说明、计划 Friday 发布和恢复后的 QA 文字，未观察到此次样本推断偏好的问题，不能据单一样本宣布先前摘要质量问题已解决。安装包生产检索实现读取隔离复制的真实摘要，查询 Heliotrope 命中；这是受控调用，**没有验证聊天端到端检索**。页面中的可选范围弹窗已确认列表可滚动、底部取消/刷新/保存可见；未通过 UI 改动范围设置。
+
+真实 Desktop 首次启动耗时约 31.5 秒，启动日志为 ready 但主窗口空白，`Ctrl+R` 后界面恢复。这是本轮实际遇到的启动界面问题，根因未定位，不能标为无问题启动。证据位于 `installed-ui-aligned/` 的生产 API 快照、隐私审计、合成事件副本、真实摘要和 `cleanup.json`；该目录未提交到 Git。
+
+验收结束后通过生产 API 恢复有效原范围，并恢复原 Windows settings 文件不存在的状态；store 按调用重新读取文件，不需修改现有用户配置或历史。测试窗口/host 已关闭，App 保持打开且采集停止，合成历史保留。安装前关闭旧 App 用的是强制进程树清理，仅为替换文件前准备，**不代表正常退出验收**。
+
+### 尚需手动或后续验证
+
+1. 实体键盘：在受控测试范围启动记录，真实按下 `Ctrl+Alt+Shift+R`，确认 UI 停止、JSONL 的停止原因及 collector 退出；本轮仅有 C++/安装版组件的软件注入结果。原生 paused 热键通过不证明产品服务 paused 热键，因为服务暂停会关闭 recorder。
+2. 正常退出：在受控录制中右键系统托盘 Memmy 图标→“退出 Memmy”，确认 Desktop/Agent/recorder 全部结束、事件文件稳定、无强制退出告警。当前桌面工具无法定位托盘菜单；窗口右上角关闭按现有逻辑隐藏 App，不能视为退出。
+3. 安装版首次空白界面的根因、IME、多屏/DPI、系统锁屏、真实应用兼容与长时间稳定性，以及正式签名仍未完成。本轮没有扩展 Windows 浏览器/Office/WPS。
+
 ## 交付边界
 
-- Windows 原生 EXE 的构建/分发、ASAR 外路径与签名尚未接入安装包。
-- Windows IME、多显示器/DPI、锁屏、真实应用和长时间采集仍需交互验收。
-- Windows 浏览器上下文仍拒绝采集；Office/WPS 正文选择器尚未产品化。
-- 本阶段验证没有开启真实模型服务，没有将本机通过结果当成 Mac 真机结果。
+- Windows EXE 的构建、包内固定路径、必要许可证及 unsigned NSIS 分发已接入；正式代码签名尚未验收。
+- Windows 实体热键、IME、多显示器/DPI、系统锁屏行为、真实应用兼容性和长时间采集仍需按实际执行情况单列。
+- Windows 已知浏览器仍拒绝采集；Office/WPS 正文选择器和应用图标尚未产品化。
+- 受控组件/fixture、真实安装版 UI、真实模型请求和聊天端到端检索属于不同层级，不能互相代替或合并计数。

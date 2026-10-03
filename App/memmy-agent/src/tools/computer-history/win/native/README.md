@@ -193,6 +193,9 @@ CTest suite below includes foreground-dependent cases outside that baseline.
   Commit races exercise policy rewriting, foreground and same-window focus A→B→A,
   search-to-password focus, pause and command floods after serialization. Partial-baseline
   recovery and observable flush failure are also covered.
+  `stop_hotkey` injects Ctrl+Alt+Shift+R into the controlled fixture and verifies clean
+  collector shutdown both running and native-paused, with no authorized application.
+  It verifies synthetic input, not a person's physical keyboard.
 - Do not interact with the desktop while foreground cases run.
 
 ### Local acceptance (2026-10-02)

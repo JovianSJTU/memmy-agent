@@ -1,15 +1,22 @@
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { compileWindowsPolicy, parseNativePolicy, pathKey, replaceNativePolicy, type ApplicationBinding, type NativePolicy } from "./policy.js";
-import { discoverApplications, WindowsSettingsStore } from "./settings.js";
+import { compileWindowsPolicy, isSystemSurface, parseNativePolicy, pathKey, replaceNativePolicy, type ApplicationBinding, type NativePolicy } from "./policy.js";
+import { browserNames, discoverApplications, WindowsSettingsStore } from "./settings.js";
 import type { WindowsHistoryRecorder } from "./recorder.js";
 
 export function bindSettings(store: WindowsSettingsStore, bindings: ApplicationBinding[]): NativePolicy {
   const settings = store.read();
-  if (settings.applications.some((rule) => bindings.some((binding) => pathKey(binding.executable) === pathKey(rule.executable)))) {
-    return compileWindowsPolicy(settings.applications, bindings, { sensitiveAutomationIds: settings.sensitiveAutomationIds, deny: settings.deny, limits: settings.limits });
-  } else {
+  const options = { defaultApplicationBehavior: settings.defaultApplicationBehavior, sensitiveAutomationIds: settings.sensitiveAutomationIds, deny: settings.deny, limits: settings.limits };
+  // No usable binding (including all-denied scopes) keeps an inert native policy.
+  const eligible = bindings.filter((binding) => !settings.deny?.executables?.some((exe) => pathKey(exe) === pathKey(binding.executable)));
+  try {
+    return compileWindowsPolicy(settings.applications, eligible, options);
+  } catch (error) {
+    // A nonempty candidate set may fail validation (size/budget); never hide that failure.
+    const candidates = eligible.filter((binding) => !isSystemSurface(binding.executable) && !browserNames.has(path.win32.basename(pathKey(binding.executable)))
+      && (settings.defaultApplicationBehavior === "observe" || settings.applications.some((rule) => pathKey(rule.executable) === pathKey(binding.executable))));
+    if (candidates.length) throw error;
     // A revoked/closed application must not keep an old process instance authorized.
     // This rule cannot match: its only PID is also explicitly denied.
     return parseNativePolicy({ version: 1, applications: [{ pid: process.pid, executable: process.execPath, processStart: "1" }],
@@ -31,7 +38,7 @@ export class WindowsPolicySession {
     const session = new WindowsPolicySession(directory, new WindowsSettingsStore(settingsFile), binary);
     try {
       const settings = session.store.read();
-      if (!settings.applications.length) throw new Error("windows_authorization_required");
+      if (settings.defaultApplicationBehavior !== "observe" && !settings.applications.length) throw new Error("windows_authorization_required");
       const policy = bindSettings(session.store, await discoverApplications(binary));
       session.current = JSON.stringify(policy);
       replaceNativePolicy(session.file, policy);

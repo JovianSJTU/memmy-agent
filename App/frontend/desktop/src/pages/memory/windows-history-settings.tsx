@@ -11,6 +11,7 @@ export function WindowsHistorySettings(props: { client: MemmyAgentClient; onClos
   const { t } = useTranslation();
   const [configuration, setConfiguration] = useState<WindowsHistoryConfiguration | null>(null);
   const [selected, setSelected] = useState(new Set<string>());
+  const [behavior, setBehavior] = useState<"observe" | "do_not_observe">("observe");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const active = useRef(true);
@@ -19,7 +20,8 @@ export function WindowsHistorySettings(props: { client: MemmyAgentClient; onClos
     try {
       const next = await props.client.getWindowsHistoryConfiguration();
       if (!active.current) return;
-      setConfiguration(next); setSelected(new Set(next.applications.filter((app) => app.allowed).map((app) => app.id)));
+      setConfiguration(next); setBehavior(next.settings.defaultApplicationBehavior ?? "do_not_observe");
+      setSelected(new Set(next.applications.filter((app) => app.allowed).map((app) => app.id)));
     } catch (cause) { if (active.current) setError(cause instanceof Error ? cause.message : String(cause)); }
     finally { if (active.current) setBusy(false); }
   }, [props.client]);
@@ -28,8 +30,14 @@ export function WindowsHistorySettings(props: { client: MemmyAgentClient; onClos
     if (!configuration || busy) return;
     setBusy(true); setError(null);
     try {
-      const applications = configuration.applications.filter((app) => selected.has(app.id)).map((app) => app.rule ?? { executable: app.executable });
-      const next = await props.client.updateWindowsHistorySettings({ ...configuration.settings, applications });
+      const applications = behavior === "observe" ? configuration.settings.applications
+        : configuration.applications.filter((app) => selected.has(app.id)).map((app) => app.rule ?? { executable: app.executable });
+      const excluded = configuration.applications.filter((app) => app.supported && !selected.has(app.id)).map((app) => app.executable);
+      const next = await props.client.updateWindowsHistorySettings({ ...configuration.settings, applications,
+        ...(behavior === "observe" ? { defaultApplicationBehavior: behavior, deny: { executables: excluded } }
+          : { ...(configuration.settings.defaultApplicationBehavior ? { defaultApplicationBehavior: behavior } : {}),
+            ...(configuration.settings.deny ? { deny: { executables: configuration.settings.deny.executables?.filter((exe) =>
+              !configuration.applications.some((app) => selected.has(app.id) && app.executable.toLowerCase() === exe.toLowerCase())) } } : {}) }) });
       if (!active.current) return;
       props.onSaved(next);
       if (props.onStart) {
@@ -43,22 +51,36 @@ export function WindowsHistorySettings(props: { client: MemmyAgentClient; onClos
   const reason = configuration?.permissions.reason;
   const reasonText = reason && reason !== "ready" ? t(`computerHistory.windows.${reason}`) : null;
   return createPortal(<Modal open title={t("computerHistory.windows.title")} closeLabel={t("common.close")} onClose={() => { if (!busy) props.onClose(); }}
-    closeDisabled={busy} className="confirm-dialog confirm-dialog--titled ch__permission-dialog" style={{ width: 520, maxWidth: "calc(100vw - 32px)" }}
+    closeDisabled={busy} className="confirm-dialog confirm-dialog--titled ch__permission-dialog ch__windows-settings"
+    bodyClassName="confirm-dialog__body ch__windows-settings-body" footerClassName="confirm-dialog__footer"
+    style={{ width: 520, maxWidth: "calc(100vw - 32px)" }}
     footer={<><Button disabled={busy} onClick={props.onClose}>{t("dialog.cancel")}</Button>
       <Button disabled={busy || !configuration} onClick={() => void refresh()}>{t("computerHistory.windows.refresh")}</Button>
-      <Button disabled={busy || !configuration || (!!props.onStart && (!selected.size || reason === "collector_unavailable"))} onClick={() => void save()}>
+      <Button disabled={busy || !configuration || (!!props.onStart && ((behavior !== "observe" && !selected.size) || reason === "collector_unavailable"))} onClick={() => void save()}>
         {t(props.onStart ? "computerHistory.windows.saveAndStart" : "computerHistory.windows.save")}</Button></>}>
-    <p className="text-sm mb-3">{t("computerHistory.windows.description")}</p>
-    <p className="text-sm mb-3">{t("computerHistory.windows.changesStopRecording")}</p>
-    {reasonText ? <p role="status" className="text-sm mb-3">{reasonText}</p> : null}
+    <p>{t("computerHistory.windows.description")}</p>
+    <p>{t("computerHistory.windows.changesStopRecording")}</p>
+    <label className="ch__windows-scope">{t("computerHistory.windows.scope")}
+      <select aria-label={t("computerHistory.windows.scope")} value={behavior} disabled={busy} onChange={(event) => {
+        const next = event.target.value as "observe" | "do_not_observe";
+        setBehavior(next);
+        setSelected(new Set(configuration?.applications.filter((app) => app.supported && (next === "observe"
+          ? !configuration.settings.deny?.executables?.some((exe) => exe.toLowerCase() === app.executable.toLowerCase())
+          : !!app.rule && app.allowed)).map((app) => app.id)));
+      }}>
+        <option value="observe">{t("computerHistory.windows.allApplications")}</option>
+        <option value="do_not_observe">{t("computerHistory.windows.selectedApplications")}</option>
+      </select>
+    </label>
+    {reasonText ? <p role="status">{reasonText}</p> : null}
     {error ? <p role="alert">{error}</p> : null}
-    <div className="max-h-80 overflow-auto space-y-2">
-      {configuration?.applications.map((app) => <label key={app.id} className="flex items-start gap-2 rounded border p-2 text-sm">
-        <input type="checkbox" checked={selected.has(app.id)} disabled={busy || (!app.supported && !selected.has(app.id)) || (!selected.has(app.id) && selected.size >= 32)} onChange={(event) => {
+    <div className="ch__windows-applications">
+      {configuration?.applications.map((app) => <label key={app.id} className="ch__windows-application">
+        <input type="checkbox" checked={selected.has(app.id)} disabled={busy || (!app.supported && !selected.has(app.id)) || (behavior !== "observe" && !selected.has(app.id) && selected.size >= 32)} onChange={(event) => {
           setSelected((current) => { const next = new Set(current); if (event.target.checked) next.add(app.id); else next.delete(app.id); return next; });
         }} />
-        <span><span className="font-medium">{app.name}</span><span className="ml-2 text-xs">{t(!app.supported ? "computerHistory.windows.browserUnsupported" : app.running ? "computerHistory.windows.running" : "computerHistory.windows.closed")}</span>
-          <span className="block break-all text-xs text-text-ink/60">{app.executable}</span></span>
+        <span><strong>{app.name}</strong><span className="ch__windows-application-state">{t(!app.supported ? "computerHistory.windows.browserUnsupported" : app.running ? "computerHistory.windows.running" : "computerHistory.windows.closed")}</span>
+          <span className="ch__windows-application-path">{app.executable}</span></span>
       </label>)}
       {configuration && !configuration.applications.length ? <p>{t("computerHistory.windows.empty")}</p> : null}
     </div>

@@ -41,6 +41,7 @@ export function ComputerHistoryRecordingConfirmation(props: {
               <strong className="font-semibold text-text-ink">{t(props.windows ? "computerHistory.windows.selectedOperations" : "computerHistory.enableAllOperations")}</strong>
               {noticeAfter}{t("computerHistory.enableLocalNotice")}
             </li>
+            {props.windows && <li>{t("computerHistory.windows.stopHotkey")}</li>}
           </ul>
         )}
         onCancel={props.onCancel}

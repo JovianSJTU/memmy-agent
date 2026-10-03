@@ -19,6 +19,7 @@ const WindowsAppRuleSchema = z.object({
   sensitiveAutomationIds: z.array(z.string()).optional(),
 }).strict();
 export const WindowsHistorySettingsSchema = z.object({ version: z.literal(1), applications: z.array(WindowsAppRuleSchema), sensitiveAutomationIds: z.array(z.string()).optional(), deny: z.object({ executables: z.array(z.string()).optional() }).strict().optional(),
+defaultApplicationBehavior: z.enum(["observe", "do_not_observe"]).optional(),
 limits: z.object({ maxDepth: z.number(), maxNodes: z.number(), maxVisited: z.number(), maxTextChars: z.number(),
   maxNodeTextChars: z.number(), queryBudgetMs: z.number(), workerTimeoutMs: z.number() }).strict().optional() }).strict();
 export const WindowsHistoryConfigurationSchema = z.object({ settings: WindowsHistorySettingsSchema,

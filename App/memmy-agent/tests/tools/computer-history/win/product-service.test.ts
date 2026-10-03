@@ -40,11 +40,20 @@ afterEach(async () => {
 
 describe("Windows managed service", () => {
   it("preflights explicit consent without creating Mac defaults or a recording", async () => {
-    const { root, service } = setup();
+    const { root, service, store } = setup();
+    store.write({ version: 1, applications: [] });
     const before = fs.readdirSync(root, { recursive: true });
     const result = await service.startObservationWithPermissions();
     expect(result.observation).toMatchObject({ state: "stopped", permissions: { platform: "windows", ready: false, reason: "authorization_required", accessibility: false, inputMonitoring: false } });
     expect(fs.readdirSync(root, { recursive: true })).toEqual(before);
+  });
+  it("starts a new profile directly without application selection and remains stopped before Start", async () => {
+    const { service, store } = setup();
+    expect(store.read().defaultApplicationBehavior).toBe("observe");
+    expect(service.snapshot().observation.state).toBe("stopped");
+    expect((await service.getWindowsConfiguration()).permissions.ready).toBe(true);
+    expect((await service.startObservationWithPermissions()).observation.state).toBe("running");
+    await service.stopObservation();
   });
   it("reports missing components, closed applications and discovery failure before capture", async () => {
     const { root, service, store } = setup(); store.write({ version: 1, applications: [{ executable }] });

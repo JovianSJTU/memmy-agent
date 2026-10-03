@@ -31,7 +31,7 @@ async function render(config = configuration(), start?: () => Promise<void>) {
 }
 const button = (label: string) => [...document.querySelectorAll<HTMLButtonElement>("button")].find((node) => node.textContent === label)!;
 
-describe("Windows explicit application picker", () => {
+describe("Windows application scope", () => {
   it("does not select discovered applications and prevents selecting unsupported browsers", async () => {
     const { client, onClose } = await render();
     const inputs = document.querySelectorAll<HTMLInputElement>('input[type="checkbox"]');
@@ -63,5 +63,34 @@ describe("Windows explicit application picker", () => {
     await act(async () => { button("Save and start recording").click(); });
     expect(start).not.toHaveBeenCalled(); expect(onClose).not.toHaveBeenCalled();
     expect(document.querySelector('[role="alert"]')?.textContent).toContain("Open");
+  });
+  it("uses broad mode as exclusions and saves an excluded app without requiring an allowlist", async () => {
+    const config = configuration();
+    config.settings.defaultApplicationBehavior = "observe";
+    config.permissions.ready = true;
+    config.permissions.reason = "ready";
+    config.applications[0]!.allowed = true;
+    const { client } = await render(config);
+    expect(document.querySelector<HTMLSelectElement>("select")?.value).toBe("observe");
+    await act(async () => { document.querySelector<HTMLInputElement>('input[type="checkbox"]')!.click(); });
+    await act(async () => { button("Save selection").click(); });
+    expect(client.updateWindowsHistorySettings).toHaveBeenCalledExactlyOnceWith({ version: 1, defaultApplicationBehavior: "observe",
+      applications: [], deny: { executables: ["C:\\Apps\\Fixture.exe"] } });
+  });
+  it("does not re-enable an excluded custom rule when switching to selected-only mode", async () => {
+    const config = configuration();
+    const rule = { executable: "C:\\Apps\\Fixture.exe", searchFields: [{ controlType: "Edit" as const, automationId: "search" }] };
+    config.settings = { version: 1, defaultApplicationBehavior: "observe", applications: [rule], deny: { executables: [rule.executable] } };
+    config.applications[0]!.rule = rule;
+    const { client } = await render(config);
+    await act(async () => {
+      const select = document.querySelector<HTMLSelectElement>("select")!;
+      select.value = "do_not_observe";
+      select.dispatchEvent(new Event("change", { bubbles: true }));
+    });
+    expect(document.querySelector<HTMLInputElement>('input[type="checkbox"]')?.checked).toBe(false);
+    await act(async () => { button("Save selection").click(); });
+    expect(client.updateWindowsHistorySettings).toHaveBeenCalledExactlyOnceWith({ ...config.settings,
+      defaultApplicationBehavior: "do_not_observe", applications: [] });
   });
 });

@@ -1514,6 +1514,29 @@ void CaseInputHooksLifecycle() {
   }
 }
 
+void CaseStopHotkey() {
+  Fixture fixture;
+  fixture.Start();
+  fixture.RequireForeground('a');
+  // The fixture is deliberately not authorized: the chord must stop capture
+  // without inspecting that application's content, also while native-paused.
+  for (const bool paused : {false, true}) {
+    Observe observe;
+    observe.Start(g_paths.Recorder(), {L"observe", L"--policy", NeutralPolicy().wstring(), L"--seconds", L"60", L"--input-hooks"});
+    observe.Started();
+    if (paused) {
+      observe.Proc().WriteLine("pause");
+      observe.Wait("session.paused", 5000);
+    }
+    fixture.ExpectForeground('a', "before synthetic stop chord");
+    Expect(fixture.Command("input stop-hotkey").value("ok", false), "synthetic hotkey injection");
+    const Json stopped = observe.Wait("session.stopped", 5000);
+    Expect(stopped["reason"] == "stop_hotkey" && stopped["hooksDetached"] == true, "hotkey detached hooks");
+    Expect(observe.Finish(5000, "hotkey") == 0, "hotkey exit code");
+    Expect(observe.Proc().StdoutBytes().find("FIXTURE-") == std::string::npos, "unauthorized content absent");
+  }
+}
+
 void CaseObserveCtrlBreak() {
   // Console control events need a shared console; create a hidden one if the harness has none.
   DWORD consoleProcess = 0;
@@ -1563,6 +1586,7 @@ const std::map<std::string, std::function<void()>>& Cases() {
       {"output_flush_failure", CaseOutputFlushFailure},
       {"stdout_broken", CaseStdoutBroken},
       {"input_hooks_lifecycle", CaseInputHooksLifecycle},
+      {"stop_hotkey", CaseStopHotkey},
   };
   return cases;
 }

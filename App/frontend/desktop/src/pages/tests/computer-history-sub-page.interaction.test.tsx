@@ -60,6 +60,25 @@ describe("ComputerHistorySubPage", () => {
     return client;
   };
 
+  it("starts a new Windows profile after confirmation without requiring application selection", async () => {
+    window.memmy = { platform: "win32" } as NonNullable<Window["memmy"]>;
+    const permissions = { supported: true, platform: "windows" as const, ready: true, accessibility: false, inputMonitoring: false, reason: "ready" as const };
+    const initial = snapshot({ observation: { ...snapshot().observation, permissions } });
+    const client = await renderWith(initial, {
+      startComputerHistoryObservation: vi.fn().mockResolvedValue(snapshot({ observation: { ...initial.observation, state: "running" } })),
+      getWindowsHistoryConfiguration: vi.fn().mockResolvedValue({ settings: { version: 1, defaultApplicationBehavior: "observe", applications: [] }, applications: [], permissions }),
+      updateWindowsHistorySettings: vi.fn(),
+    });
+    expect(client.startComputerHistoryObservation).not.toHaveBeenCalled();
+    act(() => container.querySelector<HTMLButtonElement>('[role="switch"]')!.click());
+    await act(async () => confirmationButton()!.click());
+    expect(client.startComputerHistoryObservation).toHaveBeenCalledOnce();
+    expect(container.querySelector('[role="switch"]')?.getAttribute("aria-checked")).toBe("true");
+    expect(document.querySelector(".ch__permission-dialog")).toBeNull();
+    expect(client.getWindowsHistoryConfiguration).toHaveBeenCalledOnce();
+    expect(client.updateWindowsHistorySettings).not.toHaveBeenCalled();
+  });
+
   it("uses explicit Windows application setup and keeps cancellation closed across polls", async () => {
     vi.useFakeTimers();
     window.memmy = { platform: "win32" } as NonNullable<Window["memmy"]>;
@@ -72,9 +91,9 @@ describe("ComputerHistorySubPage", () => {
       openComputerHistoryPermission: vi.fn(),
     });
     act(() => container.querySelector<HTMLButtonElement>('[role="switch"]')!.click());
-    expect(document.body.textContent).toContain("你明确选择的应用中的操作");
+    expect(document.body.textContent).toContain("采集范围内支持的应用中的操作");
     await act(async () => confirmationButton()!.click());
-    expect(document.querySelector(".ch__permission-dialog")?.textContent).toContain("记录的应用");
+    expect(document.querySelector(".ch__permission-dialog")?.textContent).toContain("应用范围");
     expect(document.querySelector(".ch__permission-dialog")?.textContent).not.toContain("两项权限");
     expect(client.openComputerHistoryPermission).not.toHaveBeenCalled();
     await act(async () => document.querySelector<HTMLButtonElement>('.ch__permission-dialog button[aria-label="关闭"]')!.click());

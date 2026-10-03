@@ -205,6 +205,38 @@ TEST(policy_identity_fields_require_lossless_strings) {
   CHECK(policy.applications[0].hwnd == std::optional<std::uint64_t>(1704818));
 }
 
+TEST(broad_scope_is_bounded_and_still_requires_exact_instance_bindings) {
+  Json apps = Json::array();
+  for (unsigned pid = 1; pid <= 512; ++pid) apps.push_back({{"pid", pid}, {"executable", "C:\\Apps\\Tool.exe"}, {"processStart", "100"}});
+  Json root = {{"version", 1u}, {"applications", apps}, {"defaultApplicationBehavior", "observe"}};
+  auto parsed = policy::Parse(DumpJson(root));
+  CHECK(parsed.policy.has_value());
+  if (parsed.policy) {
+    policy::Target target{1, 100, 10, L"C:\\Apps\\Tool.exe"};
+    CHECK(policy::Evaluate(*parsed.policy, target, Identity).verdict == policy::Verdict::Allowed);
+    target.processStart = 101;
+    CHECK(policy::Evaluate(*parsed.policy, target, Identity).verdict == policy::Verdict::NotAuthorized);
+  }
+  root.erase("defaultApplicationBehavior");
+  CHECK(ParseError(DumpJson(root)) == "range_invalid");
+  root["defaultApplicationBehavior"] = "observe";
+  root["applications"].push_back({{"pid", 600u}, {"executable", "C:\\Apps\\Tool.exe"}});
+  CHECK(ParseError(DumpJson(root)) == "range_invalid");
+  CHECK(ParseError(PolicyJson("", R"(,"defaultApplicationBehavior":"invalid")")) == "range_invalid");
+}
+
+TEST(system_lock_and_screen_saver_surfaces_remain_excluded) {
+  for (const auto* executable : {L"C:\\Windows\\LockApp.exe", L"C:\\Windows\\LogonUI.exe", L"C:\\Windows\\winlogon.exe", L"C:\\Windows\\Test.SCR"}) {
+    policy::Policy settings;
+    policy::AppRule rule;
+    rule.pid = 1;
+    rule.executable = executable;
+    settings.applications.push_back(rule);
+    policy::Target target{1, 100, 10, executable};
+    CHECK(policy::Evaluate(settings, target, Identity).verdict == policy::Verdict::Denied);
+  }
+}
+
 TEST(policy_requires_absolute_executable_paths) {
   CHECK(ParseError(R"({"version":1,"applications":[{"pid":1,"executable":"Tool.exe"}]})") == "path_not_absolute");
   CHECK(ParseError(R"({"version":1,"applications":[{"pid":1,"executable":"..\\Tool.exe"}]})") == "path_not_absolute");

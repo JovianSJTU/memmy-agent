@@ -113,6 +113,18 @@ void Execute(const std::string& line) {
     ok = SetWindowTextW(GetDlgItem(g_windowA, kMessage), Wide(arg).c_str()) != FALSE;
   } else if (op == "input") {
     // Fixed controlled keys only, and only into this fixture's foreground window.
+    if (arg == "stop-hotkey" && GetForegroundWindow() == g_windowA) {
+      INPUT inputs[8]{};
+      const WORD keys[] = {VK_CONTROL, VK_MENU, VK_SHIFT, 'R', 'R', VK_SHIFT, VK_MENU, VK_CONTROL};
+      for (int i = 0; i < 8; ++i) {
+        inputs[i].type = INPUT_KEYBOARD;
+        inputs[i].ki.wVk = keys[i];
+        if (i >= 4) inputs[i].ki.dwFlags = KEYEVENTF_KEYUP;
+      }
+      reply["ok"] = SendInput(8, inputs, sizeof(INPUT)) == 8;
+      Reply(reply);
+      return;
+    }
     const WORD key = arg == "text-key" ? 'Q' : arg == "navigation" ? VK_F6 : 0;
     ok = key != 0 && GetForegroundWindow() == g_windowA;
     if (ok) {

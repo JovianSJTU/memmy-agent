@@ -1,8 +1,7 @@
 import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
 import crypto from "node:crypto";
-import fs from "node:fs";
 import path from "node:path";
-import { fileURLToPath } from "node:url";
+import { resolveNativeCollector } from "./native-helper.js";
 import { RecordingWriter, type HistoryEvent } from "../core/recording.js";
 import { readNativePolicy, replaceNativePolicy, type NativePolicy } from "./policy.js";
 import { NativeStreamReader, type NativeEvent } from "./protocol.js";
@@ -29,7 +28,7 @@ function deferred<T>(): Deferred<T> {
   void promise.catch(() => {});
   return { promise, resolve, reject };
 }
-const successfulStops = new Set(["stop_command", "stdin_eof", "duration_elapsed", "console_control"]);
+const successfulStops = new Set(["stop_command", "stdin_eof", "duration_elapsed", "console_control", "stop_hotkey"]);
 
 // The adapter continuously drains both pipes and never asks the native process to write raw UI data.
 export class WindowsHistoryRecorder {
@@ -61,8 +60,7 @@ export class WindowsHistoryRecorder {
     return recorder;
   }
   private constructor(private readonly options: WindowsRecorderOptions) {
-    const binary = options.binary ?? fileURLToPath(new URL("./memmy-history-recorder.exe", import.meta.url));
-    if (!path.isAbsolute(binary) || !fs.existsSync(binary)) throw new Error("windows_collector_unavailable");
+    const binary = resolveNativeCollector(import.meta.url, options.binary);
     if (!path.isAbsolute(options.policyFile) || !path.isAbsolute(options.eventsFile)
         || path.resolve(options.policyFile).toLowerCase() === path.resolve(options.eventsFile).toLowerCase()) throw new Error("windows_recording_path_invalid");
     const seconds = options.seconds ?? 30;

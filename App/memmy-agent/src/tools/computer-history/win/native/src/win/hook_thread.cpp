@@ -30,6 +30,7 @@ struct HookThread::State {
   UniqueHandle queueEvent_, readyEvent_;
   std::atomic<DWORD> threadId_{0};
   std::atomic<bool> installed_{false}, enabled_{true}, paused_{false};
+  std::atomic<bool> stopRequested_{false};
   std::atomic<std::uint64_t> generation_{1}, ignoredBackground_{0}, ignoredPaused_{0}, callbacks_{0},
       callbackMaxTicks_{0};
 #if MEMMY_HISTORY_TEST_HOOKS
@@ -44,6 +45,7 @@ HookThread::HookThread(std::size_t queueCapacity) : state_(std::make_shared<Stat
 std::uint64_t HookThread::Generation() const { return state_->Generation(); }
 void HookThread::BumpGeneration() { state_->BumpGeneration(); }
 void HookThread::SetPaused(bool paused) { state_->paused_.store(paused, std::memory_order_release); }
+bool HookThread::StopRequested() const { return state_->stopRequested_.load(std::memory_order_acquire); }
 HANDLE HookThread::QueueEvent() const { return state_->queueEvent_.get(); }
 TriggerQueue& HookThread::Queue() { return state_->queue_; }
 const TriggerQueue& HookThread::Queue() const { return state_->queue_; }
@@ -191,8 +193,16 @@ LRESULT CALLBACK HookThread::OnKeyboard(int code, WPARAM wParam, LPARAM lParam) 
     if (GetAsyncKeyState(VK_MENU) & 0x8000) modifiers |= 2;
     if (GetAsyncKeyState(VK_SHIFT) & 0x8000) modifiers |= 4;
     if ((GetAsyncKeyState(VK_LWIN) | GetAsyncKeyState(VK_RWIN)) & 0x8000) modifiers |= 8;
-    const auto action = ClassifyKeyboard(data->vkCode, modifiers, (data->flags & LLKHF_INJECTED) != 0);
-    if (action.kind != ActionKind::None) self->Push(TriggerKind::Input, GetForegroundWindow(), action);
+    // The stop chord is session control, including while paused or outside the
+    // allowlist. Retain no key identity and never enqueue it as captured input.
+    if (data->vkCode == 'R' && modifiers == 7) {
+      self->BumpGeneration();
+      self->stopRequested_.store(true, std::memory_order_release);
+      SetEvent(self->queueEvent_.get());
+    } else {
+      const auto action = ClassifyKeyboard(data->vkCode, modifiers, (data->flags & LLKHF_INJECTED) != 0);
+      if (action.kind != ActionKind::None) self->Push(TriggerKind::Input, GetForegroundWindow(), action);
+    }
     self->RecordCallback(started);
   }
   return CallNextHookEx(nullptr, code, wParam, lParam);

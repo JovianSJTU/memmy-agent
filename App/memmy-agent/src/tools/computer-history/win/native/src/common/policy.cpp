@@ -176,14 +176,22 @@ class Parser {
   }
 
   bool PolicyObject(const Json& root, Policy& policy) {
-    if (!Keys(root, "", {"version", "applications", "deny", "sensitiveAutomationIds", "limits"})) return false;
+    if (!Keys(root, "", {"version", "applications", "defaultApplicationBehavior", "deny", "sensitiveAutomationIds", "limits"})) return false;
     if (!root.contains("version") || !root.contains("applications")) return Fail("missing_key", "");
     if (!root["version"].is_number_unsigned() || root["version"].get<std::uint64_t>() != 1) {
       return Fail("version_unsupported", "/version");
     }
     const Json& applications = root["applications"];
+    bool broadScope = false;
+    if (root.contains("defaultApplicationBehavior")) {
+      const auto& behavior = root["defaultApplicationBehavior"];
+      if (!behavior.is_string() || (behavior != "observe" && behavior != "do_not_observe")) {
+        return Fail("range_invalid", "/defaultApplicationBehavior");
+      }
+      broadScope = behavior == "observe";
+    }
     if (!applications.is_array()) return Fail("type_invalid", "/applications");
-    if (applications.empty() || applications.size() > kMaxApplications) return Fail("range_invalid", "/applications");
+    if (applications.empty() || applications.size() > (broadScope ? 512 : kMaxApplications)) return Fail("range_invalid", "/applications");
     for (std::size_t i = 0; i < applications.size(); ++i) {
       AppRule rule;
       if (!Application(applications[i], "/applications/" + std::to_string(i), rule)) return false;
@@ -276,6 +284,14 @@ bool IsKnownBrowserExecutable(std::wstring_view executablePath) {
 Decision Evaluate(const Policy& policy, const Target& target, const Canonicalizer& canonicalize) {
   Decision decision;
   if (target.pid == 0 || target.executable.empty()) return decision;
+  const auto name = Basename(target.executable);
+  if (text::EqualsOrdinalIgnoreCase(name, L"winlogon.exe") || text::EqualsOrdinalIgnoreCase(name, L"logonui.exe") ||
+      text::EqualsOrdinalIgnoreCase(name, L"lockapp.exe") ||
+      (name.size() >= 4 && text::EqualsOrdinalIgnoreCase(name.substr(name.size() - 4), L".scr"))) {
+    decision.verdict = Verdict::Denied;
+    decision.reason = "system_surface";
+    return decision;
+  }
   if (std::find(policy.deniedPids.begin(), policy.deniedPids.end(), target.pid) != policy.deniedPids.end()) {
     decision.verdict = Verdict::Denied;
     decision.reason = "application_denied";

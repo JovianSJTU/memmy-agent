@@ -4,7 +4,7 @@ import { fileURLToPath } from "node:url";
 import { ComputerHistoryApiError } from "../core/computer-history-api.js";
 import type { HistoryPlatformDriver, HistoryPermissions, RecorderLaunch } from "../core/platform-driver.js";
 import { applicationCatalog, browserNames, discoverApplications, resolveWindowsCollector, WindowsSettingsStore } from "./settings.js";
-import { pathKey } from "./policy.js";
+import { isSystemSurface, pathKey } from "./policy.js";
 import path from "node:path";
 
 interface ProcessSession { ready: Promise<void>; closed: Promise<void> }
@@ -13,7 +13,8 @@ export class WindowsPlatformDriver implements HistoryPlatformDriver {
   constructor(readonly store: WindowsSettingsStore, private readonly binary?: string,
     private readonly recorderScript = fileURLToPath(new URL("./record-human-history.js", import.meta.url))) {}
   prepare(): void {
-    if (!this.store.read().applications.length) throw new ComputerHistoryApiError(422, "Choose an application to record first");
+    const settings = this.store.read();
+    if (settings.defaultApplicationBehavior !== "observe" && !settings.applications.length) throw new ComputerHistoryApiError(422, "Choose an application to record first");
     resolveWindowsCollector(this.binary);
     if (!fs.existsSync(this.recorderScript)) throw new ComputerHistoryApiError(503, "Windows recorder entry is unavailable");
   }
@@ -30,10 +31,10 @@ export class WindowsPlatformDriver implements HistoryPlatformDriver {
     catch { return { ...status, reason: "collector_unavailable" }; }
     let settings;
     try { settings = this.store.read(); } catch { return { ...status, reason: "settings_invalid" }; }
-    if (!settings.applications.length) return status;
+    if (settings.defaultApplicationBehavior !== "observe" && !settings.applications.length) return status;
     try {
       const bindings = await discoverApplications(binary);
-      const ready = bindings.some((binding) => !browserNames.has(path.win32.basename(pathKey(binding.executable)))
+      const ready = settings.defaultApplicationBehavior === "observe" || bindings.some((binding) => !isSystemSurface(binding.executable) && !browserNames.has(path.win32.basename(pathKey(binding.executable)))
         && !settings.deny?.executables?.some((exe) => pathKey(exe) === pathKey(binding.executable))
         && settings.applications.some((rule) => pathKey(rule.executable) === pathKey(binding.executable)));
       return { ...status, ready, reason: ready ? "ready" : "no_running_authorized_application" };

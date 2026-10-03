@@ -20,10 +20,14 @@ param(
   [string] $ArtifactsRoot = (Join-Path $env:LOCALAPPDATA 'memmy-history-recorder\test-artifacts'),
   # Offline builds: a local copy of nlohmann/json 3.12.0 json.hpp (SHA-256 verified by CMake).
   [string] $JsonHeader = '',
+  [switch] $ProductionOnly,
+  [string] $StageDirectory = '',
   [switch] $Test
 )
 
 $ErrorActionPreference = 'Stop'
+if ($ProductionOnly -and $Test) { throw '-ProductionOnly cannot be used with -Test.' }
+if ($StageDirectory -and $Configuration -ne 'Release') { throw 'Only Release builds may be staged for packaging.' }
 $repoRoot = (Resolve-Path (Join-Path $PSScriptRoot '..\..\..')).Path
 $source = Join-Path $repoRoot 'App\memmy-agent\src\tools\computer-history\win\native'
 $buildDir = Join-Path $BuildRoot $Configuration.ToLowerInvariant()
@@ -47,7 +51,7 @@ $env:PATH = (Join-Path $vsRoot 'Common7\IDE\CommonExtensions\Microsoft\CMake\CMa
             (Join-Path $vsRoot 'Common7\IDE\CommonExtensions\Microsoft\CMake\Ninja') + ';' + $env:PATH
 
 $configureArgs = @('-S', $source, '-B', $buildDir, '-G', 'Ninja', "-DCMAKE_BUILD_TYPE=$Configuration",
-                   "-DMEMMY_HISTORY_TEST_ARTIFACTS=$artifacts")
+                   "-DMEMMY_HISTORY_TEST_ARTIFACTS=$artifacts", "-DMEMMY_HISTORY_BUILD_TESTS=$(if ($ProductionOnly) { 'OFF' } else { 'ON' })")
 if ($JsonHeader) { $configureArgs += "-DMEMMY_NLOHMANN_JSON_HPP=$JsonHeader" }
 & cmake @configureArgs
 if ($LASTEXITCODE -ne 0) { throw 'CMake configure failed.' }
@@ -57,6 +61,12 @@ if ($LASTEXITCODE -ne 0) { throw 'Build failed.' }
 $recorder = Join-Path $buildDir 'memmy-history-recorder.exe'
 Write-Host ("memmy-history-recorder.exe: {0} bytes" -f (Get-Item $recorder).Length)
 & dumpbin /nologo /dependents $recorder | Select-String '\.dll' | ForEach-Object { Write-Host ('  imports ' + $_.Line.Trim()) }
+
+if ($StageDirectory) {
+  New-Item -ItemType Directory -Force -Path $StageDirectory | Out-Null
+  Copy-Item -LiteralPath $recorder -Destination (Join-Path $StageDirectory 'memmy-history-recorder.exe') -Force
+  Copy-Item -LiteralPath (Join-Path $source 'THIRD_PARTY_NOTICES.md') -Destination (Join-Path $StageDirectory 'memmy-history-recorder.NOTICES.md') -Force
+}
 
 if ($Test) {
   & ctest --test-dir $buildDir --output-on-failure
