@@ -201,9 +201,71 @@ Windows NSIS 构建现在使用 `-ProductionOnly` 编译静态 CRT 的 Release h
 2. 正常退出：在受控录制中右键系统托盘 Memmy 图标→“退出 Memmy”，确认 Desktop/Agent/recorder 全部结束、事件文件稳定、无强制退出告警。当前桌面工具无法定位托盘菜单；窗口右上角关闭按现有逻辑隐藏 App，不能视为退出。
 3. 安装版首次空白界面的根因、IME、多屏/DPI、系统锁屏、真实应用兼容与长时间稳定性，以及正式签名仍未完成。本轮没有扩展 Windows 浏览器/Office/WPS。
 
+## Windows 首帧交接、退出收尾与安装版复验（2026-10-03）
+
+本轮接续 `6fe3655f`。此前安装版的启动日志已 ready，但窗口空白，需要 `Ctrl+R` 才恢复；源码确认 Windows 主窗口创建时立即可见，且在 `did-finish-load` 时关闭 splash，该事件并不保证首帧已绘制。现改为 Windows 完整窗口初始隐藏，收到 `ready-to-show` 后显示并关闭 splash；加载失败、30 秒首帧超时、退出期间的迟到事件仍受原有生命周期控制。Mac/Linux 的初始可见和页面加载交接保持原行为；本机仅运行平台分支替身测试，没有再次进行 Mac 实机验证。
+
+### 自动回归与证据层级
+
+本机证据目录为 `D:/memmy-agent/App/shell/desktop/release/startup-diagnostics-20261003/`。报告、截图和安装包均未提交到 Git。
+
+- 修复前加入首帧断言，`startup-before-20261003.json` 为 **18 通过、1 失败**，失败证明原主窗口在首帧前已显示。修复后的启动页、启动生命周期和窗口模式三组测试为 **64 通过、0 失败、0 跳过**，报告为 release 下的 `startup-final-20261003.json`。Windows checkout 的窗口模式源文本检查统一 CRLF/LF，保留所有断言。Desktop TypeScript 检查和编译通过。
+- 退出收尾新增 **10 项**真实本地 HTTP 与生产 cleanup 顺序测试，覆盖认证、等待响应体结束、空闲 409、认证/停止失败、超时、Windows 先排空后终止及 Mac/Linux 原顺序。连同上述三组重新执行为 **74 通过、0 失败、0 跳过**，见 `exit-drain-regression-20261003.json`；这是重跑后的定向结果，不能与 64 相加。
+- 真正 Electron + 新包内 `createMainWindow`、renderer、preload 的隔离检查为 **4 通过**：初始隐藏、页面加载不提前交接、首帧交接、真实 React 页面渲染。`packaged-probe/results.json` 与 `paint.png` 保留。使用独立用户目录、合成本地 API，拒绝外部请求；没有启动真实 Desktop 服务或调用模型。首次脚本因用户目录缺失及合成枚举不合法失败，修正脚本后通过，不将其当作产品失败或安装版验收。
+- 新包和新安装目录的生产预检各 **6 通过**，分别见 `packaged/preflight.json`、`installed/preflight.json`。无效 helper 环境变量和空 PATH 下仍执行包内 EXE；Desktop/Memory/Agent 三份 SQLite 实际查询及共享摘要 CLI 均通过。三份安装文件与包内文件的 SHA-256 全部匹配，见 `installed-matches.json`。
+- 扩大到 Desktop 全目录的首轮有效回归为 **431 通过、13 失败、0 跳过**，原始报告 `desktop-regression-20261003.json` 保留，不能写成全绿。更早受限环境的进程查询被拒绝，该轮中断，没有完整计数。13 项的后续定位如下，不能把定向复验拼成另一次完整回归总数：
+
+| 首轮失败 | 定位与定向结果 |
+|---|---|
+| 9 项 dev CLI | 当前 PowerShell PATH 找不到 `bash`（ENOENT）。临时加入 Git Bash 后该文件 **9 通过、2 失败**；余下两项要求 POSIX 文件符号链接，Git Bash 在本机产生普通文件，断言仍失败，未跳过或删除。 |
+| 1 项真实 Memory 重启 | 打包临时切换根目录 SQLite 到 Electron ABI 139。新 ASAR 生成后恢复 Node 24.21.0 / ABI 137，真实查询及该项重启复验通过。 |
+| 1 项打包边界 | 多行源文本断言受 CRLF 影响；本轮未修改该测试，仍待修复。 |
+| 1 项 Memory 强杀 | Windows 实际退出描述为 `code 1`，原测试要求 POSIX `signal SIGKILL`；本轮未修改断言，仍待平台适配。 |
+| 1 项升级 relay | 默认 Vitest 5 秒预算先于用例已有的 10 秒业务时限终止。定向重跑仍失败；仅将框架预算设为 15 秒、保留原小于 10 秒断言后 **1 通过**。31 项是 testNamePattern 未选中的用例，非平台跳过；测试入口的预算仍待调整。 |
+
+### 首帧修复测试包与实际启动
+
+首帧修复包随后保留为 `D:/memmy-agent/App/shell/desktop/release/Memmy-1.1.8-win32-x64-cn-unsigned-before-exit-drain-fix.exe`，**1.1.8 / Windows x64 / CN phone / NotSigned**，大小 **355,096,041 bytes（338.6 MiB）**。沿用上一阶段已验证的完整 runtime/helper/embedding 资源，仅重新编译 Desktop 主进程并从当前 Windows 构建脚本的打包阶段接续；SQLite ABI 与资源后置防护全部执行，日志 `win-1.1.8-x64-cn-unsigned-20261003-160816.log`，构建 exit 0。此前安装包已保留为 `Memmy-1.1.8-win32-x64-cn-unsigned-before-startup-fix.exe`，其 `8E666D...` 校验值仅属于上一阶段。
+
+| 新文件 | SHA-256 |
+|---|---|
+| NSIS | `9545FCBFDE95F1EB188E25FAA7EE0A202B0E96A64413571C6E3A13D9B99631C1` |
+| Desktop Memmy.exe | `5F7F53665E22A40149C78C0EEA0DE61961D68499D9300C1011AF70204075A4F9` |
+| app.asar | `6177D06FBDB8A217FA497CB91429F2CC71D7BA33DA7F9A404B70940FBC202BE4` |
+| 原生 helper（未变） | `2E77D871EF8F0397F0523C18FB0EAE712C5124D61AD58DA6CB02BE0F52945E1B` |
+
+用户从托盘正常退出旧 App，日志记录 `08:15:30 UTC quit:cleanup-start`；该次退出时采集已停止，只属于空闲退出证据。确认安装操作于本地 **16:18:27** 返回 exit 0；首个安装进程结束时未保留退出码，未启动 App 的情况下再次对同一包确认安装，见 `install-result.json`。
+
+新安装版于本地 **16:19:18** 启动，无开发目录或 helper 覆盖。实际界面直接显示主页面，**没有使用刷新**；启动日志于 `08:19:29 UTC` 以 `main-ready-to-show` 交接，耗时 **9,974 ms**，随后 boot ready。见 `installed/startup-acceptance.json`、`startup-excerpt.log`。这是一个正常用户配置下的真实安装版启动成功样本；UI Automation 树仍不完整，按实际截图确认页面，不以空树判定空白，也不据一次成功承诺所有间歇绘制问题均已消除。
+
+### 实体热键与录制中的托盘退出
+
+实体热键使用唯一合成 fixture 范围。首轮等待期间先通过 API 停止并清理，用户回复在清理后到达，因此不能作为实体输入证据。第二轮保留自动监控，JSONL 于 **08:30:59.679 UTC** 写入 `stop_hotkey`，API 变为 stopped、segment 为 null，原生 collector 为 0，文件保持 **6,985 bytes**；阳性标记和敏感字段过滤审计通过。该轮跨十分钟边界，前段 `stop_command` 属于正常分段，后段 `stop_hotkey` 才属于实体停止。见 `manual-retry/hotkey-start.json`、`hotkey-stop.json`、`controlled-audit.json`。停止后的阴性命令响应未单独保留，故仅声称文件稳定，不声称完成独立阴性输入确认；自动化工具返回的页面图像与目标不一致，未据其宣称 UI 视觉停止状态。
+
+用户在下一轮合成录制中于 **08:37:26 UTC** 从托盘退出。Desktop、Agent 和 collector 全部退出，文件停止增长，但 **缺少最终 `recording_stopped`**。`manual-retry/tray-before-fix-result.json` 保留失败，不能以进程消失替代完整退出验收。最初进程监控将所有 `Memmy.exe` 都视作 Desktop，因仍有 PID 7128 而失败；查询实际 Memory runtime/lock 及只读 App 设置后，确认它是用户配置 `stop_memory_service_on_exit = 0` 所允许的 Memory 服务，见 `tray-exit-role-audit.json` 和 `memory-exit-policy.json`。没有强制结束它，也没有修改退出设置。
+
+Windows 的进程树强制终止绕过了 Agent 异步 shutdown。现于 Desktop 清理 runtime 前，通过 gateway bootstrap secret 换取临时令牌，再调用生产 stop API，等待 recorder 排空。两个请求及响应体共用 **3 秒**时限，保留既有 **5 秒**退出保护；服务不可用时记录收尾失败并继续进程清理。Mac/Linux 不增加该步骤。停止 API 仍不等待模型请求；本次修复验证原始事件完整写入，不能推导为退出前所有模型摘要已生成，已有重启恢复机制仍负责未完成摘要。
+
+### 退出修复最终测试包
+
+最终包为 `D:/memmy-agent/App/shell/desktop/release/Memmy-1.1.8-win32-x64-cn-unsigned.exe`，**1.1.8 / Windows x64 / CN phone / NotSigned**，**355,102,354 bytes（338.7 MiB）**。构建日志 `win-1.1.8-x64-cn-unsigned-20261003-165122.log`，耗时 **9 分 19 秒**，exit 0，ASAR、版本、SQLite ABI 与资源后置防护通过。本轮先遗漏 unsigned 参数，尝试中止后遗留的 builder 又干扰后一次输出目录；两次失败日志保留。确认所有旧 builder 结束后串行重建，没有安装失败产物。
+
+| 最终文件 | SHA-256 |
+|---|---|
+| NSIS | `C43EAD1F0E4EC617E593927BE82BF172F2DD9740761C547B0BCAED112C077236` |
+| Desktop Memmy.exe | `562A90EDD2B4BEB01865190F1B97CA68E3404CBC24E4A8A406FA7F9BBF545627` |
+| app.asar | `C9D7EFD2BD813C37A72DD364907A6AC19DDCA272C3C8D4E5C97758BFC970184A` |
+| 原生 helper（未变） | `2E77D871EF8F0397F0523C18FB0EAE712C5124D61AD58DA6CB02BE0F52945E1B` |
+
+最终包与新安装版组件预检各 **6 通过**，见 `exit-drain-installed/packaged-preflight.json` 和 `installed/preflight.json`；三份安装文件校验全部匹配，安装于本地 **17:01:56** 返回 exit 0。安装版首次预检错误复用了包内预检已写入 legacy 设置的合成 profile，因 ready 断言失败；保留 `installed-preflight.json` 的 **1 通过、1 失败**，改用独立空 profile 后原断言全部通过。没有调整产品权限或断言。
+
+新安装版于本地 **17:03:02** 启动，实际页面与 UI Automation 树均显示主页面，未刷新。`09:03:12.736 UTC` 收到 `main-ready-to-show`，耗时 **9,006 ms**，随后 boot ready，见 `exit-drain-installed/startup-acceptance.json`。打包后的开发目录 SQLite 已恢复 Node 24.21.0 / ABI 137，真实查询通过；包内保留 Electron ABI 139。
+
+录制中的正常托盘退出修复仍需本次安装版复验结果。IME、多屏/DPI、锁屏、长时间稳定性、正式签名及既有 Windows 浏览器/Office/WPS 限制继续保留。
+
 ## 交付边界
 
 - Windows EXE 的构建、包内固定路径、必要许可证及 unsigned NSIS 分发已接入；正式代码签名尚未验收。
-- Windows 实体热键、IME、多显示器/DPI、系统锁屏行为、真实应用兼容性和长时间采集仍需按实际执行情况单列。
+- Windows 实体停止热键已有一次真实安装版通过证据；IME、多显示器/DPI、系统锁屏行为、真实应用兼容性和长时间采集仍待验收。
 - Windows 已知浏览器仍拒绝采集；Office/WPS 正文选择器和应用图标尚未产品化。
 - 受控组件/fixture、真实安装版 UI、真实模型请求和聊天端到端检索属于不同层级，不能互相代替或合并计数。

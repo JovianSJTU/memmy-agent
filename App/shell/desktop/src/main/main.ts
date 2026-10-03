@@ -122,6 +122,7 @@ import {
   type WindowsLaunchAtLoginEnvironment
 } from "./windows-launch-at-login.js";
 import { resolveComputerHistoryMarkdownPath } from "./computer-history-markdown.js";
+import { stopComputerHistoryBeforeExit } from "./computer-history-exit.js";
 
 let mainWindow: BrowserWindow | null = null;
 let petWindow: BrowserWindow | null = null;
@@ -3738,6 +3739,9 @@ function createMainWindow(target: RendererRouteTarget | null = null): BrowserWin
     ...resolveFullWindowChromeOptions(process.platform),
     ...resolveFullWindowSize(screen.getPrimaryDisplay().workArea),
     ...(windowsTaskbarIconPath ? { icon: windowsTaskbarIconPath } : {}),
+    // On Windows, keep the splash until Chromium has actually painted a frame.
+    // HTML load completion can precede painting with the title-bar overlay.
+    show: process.platform !== "win32",
     // webPreferences: the renderer's security isolation and preload configuration.
     webPreferences: createWebPreferences()
   });
@@ -3756,10 +3760,15 @@ function createMainWindow(target: RendererRouteTarget | null = null): BrowserWin
   };
   mainWindowWithMinimize.on("minimize", handleMainWindowMinimize);
 
+  targetMainWindow.once("ready-to-show", () => {
+    if (isQuitting || targetMainWindow.isDestroyed()) return;
+    if (process.platform === "win32") targetMainWindow.show();
+    closeSplashWindow("main-ready-to-show");
+  });
+  if (process.platform !== "win32") {
+    targetMainWindow.webContents.once("did-finish-load", () => closeSplashWindow("main-did-finish-load"));
+  }
   void targetMainWindow.loadURL(resolveRendererUrl("full", target)).catch(handleRendererLoadFailure);
-  // The main window takes over from the splash when its renderer is ready.
-  targetMainWindow.once("ready-to-show", () => closeSplashWindow("main-ready-to-show"));
-  targetMainWindow.webContents.once("did-finish-load", () => closeSplashWindow("main-did-finish-load"));
 
   targetMainWindow.on("closed", () => {
     mainWindow = null;
@@ -5171,6 +5180,15 @@ async function cleanupBeforeQuit(): Promise<void> {
   memoryServiceControl = null;
   const backend = localBackend;
   localBackend = null;
+  if (process.platform === "win32" && services) {
+    try {
+      await stopComputerHistoryBeforeExit(services.agentGateway);
+      console.info("[desktop] Computer History exit stop completed");
+    } catch {
+      // Keep the existing bounded process-tree cleanup if the Agent is unavailable.
+      console.warn("[desktop] Computer History exit stop failed or timed out; continuing process cleanup");
+    }
+  }
   await services?.close({ stopMemory: stopMemoryServiceForCurrentQuit });
   await backend?.close();
   await stopPackagedRendererServer();
