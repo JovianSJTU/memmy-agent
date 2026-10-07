@@ -5,6 +5,9 @@ import { join } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { describe, expect, it } from "vitest";
 import YAML from "yaml";
+import { resolveTestBash } from "./helpers/bash.js";
+
+const bash = resolveTestBash();
 
 const repoRoot = fileURLToPath(new URL("../../../..", import.meta.url));
 const devStartPath = fileURLToPath(new URL("../../../../scripts/dev-start.sh", import.meta.url));
@@ -20,7 +23,7 @@ unset MEMMY_APP_EDITION MEMMY_ACCOUNT_CHANNEL
 configure_dev_edition /path/that/does/not/exist
 test "$MEMMY_APP_EDITION" = "intl"
 test "$MEMMY_ACCOUNT_CHANNEL" = "email"`;
-    const result = spawnSync("bash", ["-s"], { cwd: repoRoot, encoding: "utf8", input: script });
+    const result = spawnSync(bash, ["-s"], { cwd: repoRoot, encoding: "utf8", input: script });
 
     expect(result.status, result.stderr || result.stdout).toBe(0);
   }, 15_000);
@@ -36,7 +39,7 @@ unset MEMMY_APP_EDITION MEMMY_ACCOUNT_CHANNEL
 configure_dev_edition "$test_dir/.env"
 test "$MEMMY_APP_EDITION" = "cn"
 test "$MEMMY_ACCOUNT_CHANNEL" = "phone"`;
-    const result = spawnSync("bash", ["-s"], { cwd: repoRoot, encoding: "utf8", input: script });
+    const result = spawnSync(bash, ["-s"], { cwd: repoRoot, encoding: "utf8", input: script });
 
     expect(result.status, result.stderr || result.stdout).toBe(0);
   });
@@ -50,7 +53,7 @@ printf '%s\n' 'MEMMY_APP_EDITION=staging' > "$test_dir/.env"
 unset MEMMY_APP_EDITION MEMMY_ACCOUNT_CHANNEL
 
 configure_dev_edition "$test_dir/.env"`;
-    const result = spawnSync("bash", ["-s"], { cwd: repoRoot, encoding: "utf8", input: script });
+    const result = spawnSync(bash, ["-s"], { cwd: repoRoot, encoding: "utf8", input: script });
 
     expect(result.status).toBe(1);
     expect(result.stderr).toContain("MEMMY_APP_EDITION must be either cn or intl");
@@ -68,7 +71,7 @@ require_command() {
 }
 
 run_main`;
-    const result = spawnSync("bash", ["-s"], { cwd: repoRoot, encoding: "utf8", input: script });
+    const result = spawnSync(bash, ["-s"], { cwd: repoRoot, encoding: "utf8", input: script });
 
     expect(result.status, result.stderr || result.stdout).toBe(0);
     expect(result.stdout).toBe("cn/phone\n");
@@ -99,7 +102,7 @@ YAML
 MEMMY_CONFIG_PATH="$test_dir/config.yaml"
 
 config_has_agent_model`;
-    const result = spawnSync("bash", ["-s"], { cwd: repoRoot, encoding: "utf8", input: script });
+    const result = spawnSync(bash, ["-s"], { cwd: repoRoot, encoding: "utf8", input: script });
 
     expect(result.status, result.stderr || result.stdout).toBe(0);
   });
@@ -123,7 +126,7 @@ MEMMY_CONFIG_PATH="$test_dir/config.yaml"
 if config_has_agent_model; then
   exit 1
 fi`;
-    const result = spawnSync("bash", ["-s"], { cwd: repoRoot, encoding: "utf8", input: script });
+    const result = spawnSync(bash, ["-s"], { cwd: repoRoot, encoding: "utf8", input: script });
 
     expect(result.status, result.stderr || result.stdout).toBe(0);
   });
@@ -203,7 +206,7 @@ npm() {
 
 ensure_memmy_agent_dependencies
 test "$install_calls" -eq 1`;
-    const result = spawnSync("bash", ["-s"], { cwd: repoRoot, encoding: "utf8", input: script });
+    const result = spawnSync(bash, ["-s"], { cwd: repoRoot, encoding: "utf8", input: script });
 
     expect(result.status, result.stderr || result.stdout).toBe(0);
   });
@@ -238,8 +241,26 @@ if (install_user_cli_link memmy-memory "$source_path"); then
   exit 1
 fi
 grep -Fx 'documentation mentions Memory/dist/src/cli/index.js' "$legacy_path"
+test ! -e "$cmd_path"`;
+    const result = spawnSync(bash, ["-s"], { cwd: repoRoot, encoding: "utf8", input: script });
+    expect(result.status, result.stderr || result.stdout).toBe(0);
+  }, 15_000);
 
-rm -f "$legacy_path"
+  // Git Bash commonly emulates ln -s by copying: that cannot test a POSIX link boundary.
+  it.skipIf(process.platform === "win32")("preserves unrelated symlinks and migrates to the POSIX launcher", () => {
+    const script = String.raw`set -euo pipefail
+test_home="$(mktemp -d)"
+trap 'rm -rf "$test_home"' EXIT
+export HOME="$test_home"
+uname() { printf '%s\n' 'MINGW64_NT-10.0'; }
+cygpath() { printf '%s\n' 'C:\current\Memory\dist\src\cli\index.js'; }
+source scripts/dev-start.sh
+source_path="$test_home/current/Memory/dist/src/cli/index.js"
+legacy_path="$HOME/.local/bin/memmy-memory"
+cmd_path="$legacy_path.cmd"
+mkdir -p "$(dirname "$source_path")" "$(dirname "$legacy_path")"
+printf '#!/usr/bin/env node\n' > "$source_path"
+
 touch "$source_path.backup"
 ln -s "$source_path.backup" "$legacy_path"
 if (install_user_cli_link memmy-memory "$source_path"); then
@@ -253,7 +274,7 @@ install_user_cli_link memmy-memory "$source_path"
 test -L "$legacy_path"
 test "$(readlink "$legacy_path")" = "$source_path"
 test ! -e "$cmd_path"`;
-    const result = spawnSync("bash", ["-s"], { cwd: repoRoot, encoding: "utf8", input: script });
+    const result = spawnSync(bash, ["-s"], { cwd: repoRoot, encoding: "utf8", input: script });
 
     expect(result.status, result.stderr || result.stdout).toBe(0);
   }, 15_000);
@@ -265,7 +286,7 @@ test ! -e "$cmd_path"`;
     expect(source).toContain('ln -s "$source" "$target"');
   });
 
-  it("replaces the legacy Memory viewer CLI launcher with a development symlink", () => {
+  it("replaces the legacy Memory viewer CLI launcher with the platform launcher", () => {
     const script = String.raw`set -euo pipefail
 test_home="$(mktemp -d)"
 trap 'rm -rf "$test_home"' EXIT
@@ -280,16 +301,25 @@ printf '#!/bin/sh\nexec env ELECTRON_RUN_AS_NODE=1 %q %q "$@"\n' \
   "$test_home/runtime/node" "/old/Memory/dist/src/cli/index.js" > "$target"
 
 install_user_cli_link memmy-memory "$source_path"
-test -L "$target"
-test "$(readlink "$target")" = "$source_path"
-
-unlink "$target"
+case "$(uname -s)" in
+  MINGW*|MSYS*|CYGWIN*)
+    test ! -e "$target"
+    test -f "$target.cmd"
+    grep -F "node \"$(cygpath -w "$source_path")\" %*" "$target.cmd"
+    rm -f "$target.cmd"
+    ;;
+  *)
+    test -L "$target"
+    test "$(readlink "$target")" = "$source_path"
+    unlink "$target"
+    ;;
+esac
 printf '#!/bin/sh\necho unrelated\n' > "$target"
 if (install_user_cli_link memmy-memory "$source_path"); then
   exit 1
 fi
 grep -Fx 'echo unrelated' "$target"`;
-    const result = spawnSync("bash", ["-s"], { cwd: repoRoot, encoding: "utf8", input: script });
+    const result = spawnSync(bash, ["-s"], { cwd: repoRoot, encoding: "utf8", input: script });
 
     expect(result.status, result.stderr || result.stdout).toBe(0);
   });

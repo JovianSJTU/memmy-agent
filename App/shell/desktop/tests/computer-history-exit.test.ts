@@ -86,6 +86,16 @@ describe("authenticated Computer History exit drain", () => {
     });
     await expect(stopComputerHistoryBeforeExit(testGateway, 100)).rejects.toMatchObject({ name: "TimeoutError" });
   });
+
+  it("also bounds an unfinished authentication body without sending stop", async () => {
+    const requests: string[] = [];
+    const testGateway = await gateway((request, response) => {
+      requests.push(request.url!);
+      response.writeHead(200); response.flushHeaders();
+    });
+    await expect(stopComputerHistoryBeforeExit(testGateway, 100)).rejects.toMatchObject({ name: "TimeoutError" });
+    expect(requests).toEqual(["/webui/bootstrap"]);
+  });
 });
 
 // Execute the real cleanup tail without importing Electron or starting user services.
@@ -94,9 +104,11 @@ const cleanup = source.statements.find(statement => ts.isFunctionDeclaration(sta
   && statement.name?.text === "cleanupBeforeQuit") as ts.FunctionDeclaration;
 const statements = cleanup.body!.statements;
 const tailIndex = statements.findIndex(statement => ts.isVariableStatement(statement)
-  && statement.declarationList.declarations.some(declaration => declaration.name.getText(source) === "services"));
+  && statement.declarationList.declarations.some(declaration => declaration.name.getText(source) === "quit"));
 if (tailIndex < 0) throw new Error("missing production cleanup tail");
-const cleanupCode = ts.transpileModule(`globalThis.cleanup = async () => { ${statements.slice(tailIndex).map(statement => statement.getText(source)).join("\n")} };`, {
+const runtimeCleanup = source.statements.find(statement => ts.isFunctionDeclaration(statement)
+  && statement.name?.text === "closeRuntimeForQuit")!;
+const cleanupCode = ts.transpileModule(`${runtimeCleanup.getText(source)}\nglobalThis.cleanup = async () => { ${statements.slice(tailIndex).map(statement => statement.getText(source)).join("\n")} };`, {
   compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.CommonJS }
 }).outputText;
 
@@ -104,9 +116,13 @@ function setupCleanup(platform: string, drain: () => Promise<void>) {
   const calls: string[] = [];
   const agentGateway = { baseUrl: "http://fixture.invalid", bootstrapSecret: "fixture-secret" };
   const stop = vi.fn(drain);
+  const services = { agentGateway, close: async () => { calls.push("services"); } };
+  const diagnostic = vi.fn();
   const context = createContext({
     process: { platform },
-    runtimeServices: { agentGateway, close: async () => { calls.push("services"); } },
+    runtimeServices: services,
+    quitCleanupContext: { services, stopMemory: false, outcome: "pending", servicesClose: null },
+    recordQuitDiagnostic: diagnostic,
     memoryServiceControl: {},
     localBackend: { close: async () => { calls.push("backend"); } },
     stopMemoryServiceForCurrentQuit: false,
@@ -116,7 +132,7 @@ function setupCleanup(platform: string, drain: () => Promise<void>) {
     console: { info: vi.fn(), warn: vi.fn() }
   });
   runInContext(cleanupCode, context);
-  return { calls, stop, context, agentGateway, cleanup: () => context.cleanup() as Promise<void> };
+  return { calls, stop, context, agentGateway, diagnostic, cleanup: () => context.cleanup() as Promise<void> };
 }
 
 describe("production Desktop cleanup ordering", () => {
@@ -135,7 +151,7 @@ describe("production Desktop cleanup ordering", () => {
     const test = setupCleanup("win32", async () => { throw new Error("fixture gateway unavailable"); });
     await test.cleanup();
     expect(test.calls).toEqual(["services", "backend", "renderer", "analytics"]);
-    expect(test.context.console.warn).toHaveBeenCalledOnce();
+    expect(test.diagnostic).toHaveBeenCalledWith(test.context.quitCleanupContext, "history-stop-failed");
   });
 
   it.each(["darwin", "linux"])("preserves %s cleanup without the Windows API drain", async platform => {

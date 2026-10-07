@@ -7,8 +7,9 @@ scheduling, lifecycle and segmented JSONL output. It is a standalone C++20 execu
 
 The executable writes the Windows-native [protocol v1](PROTOCOL.md). The adjacent
 [TypeScript adapter and product driver](../README.md) validate and normalize it into
-shared Computer History recordings. The native program remains independently buildable;
-installer copying/signing and real-application compatibility validation are later work.
+shared Computer History recordings. The native program remains independently buildable.
+Windows NSIS builds now ship the production helper outside ASAR with its license notices;
+signing and broader real-application compatibility validation remain separate work.
 
 ## Layout
 

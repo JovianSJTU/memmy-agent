@@ -2,6 +2,7 @@ import { EventEmitter } from "node:events";
 import { readFileSync } from "node:fs";
 import { createContext, runInContext } from "node:vm";
 import ts from "typescript";
+import { randomUUID } from "node:crypto";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   resolveStartupSplashHtml,
@@ -20,6 +21,7 @@ const functionNames = new Set([
 const variableNames = new Set([
   "mainWindow", "petWindow", "runtimeServices", "runtimeConfig", "isBootReady", "isQuitting",
   "isQuitCleanupInProgress", "isQuitCleanupComplete", "stopMemoryServiceForCurrentQuit",
+  "quitCleanupContext",
   "splashWindow", "splashCloseTimer", "splashTimer", "SPLASH_MAX_VISIBLE_MS", "STARTUP_SLOW_MS",
   "UPDATE_SPLASH_MAX_VISIBLE_MS", "bootStage", "bootStartedAt", "isPetWindowReadyToShow",
   "latestPetWindowLayout", "petMascotScreenAnchor", "startupRendererCleanup", "STARTUP_RENDERER_TIMEOUT_MS",
@@ -89,7 +91,7 @@ function setup(options: { delay?: number; error?: Error; apiError?: Error; clean
   const noop = () => {};
   context = createContext({
     app, BrowserWindow: FakeWindow, process: { platform: options.platform ?? "win32", env: {}, resourcesPath: "test-resources" },
-    console: { warn: vi.fn(), error: vi.fn() }, Date, setTimeout, clearTimeout,
+    console: { warn: vi.fn(), error: vi.fn() }, Date, setTimeout, clearTimeout, randomUUID,
     join: (...parts: string[]) => parts.join("/"),
     writePackagedStartupLog: async (message: string) => { events.push(message); },
     formatStartupError: (error: Error) => error.message,
@@ -122,6 +124,8 @@ function setup(options: { delay?: number; error?: Error; apiError?: Error; clean
     shouldQuitWhenAllWindowsClosed,
     hasSingleInstanceLock: true,
     readStopMemoryServiceOnExitSetting: () => false, armQuitCleanupForceExitTimer: noop,
+    recordQuitDiagnostic: noop,
+    closeRuntimeForQuit: async (quit: any) => quit.services?.close({ stopMemory: quit.stopMemory }),
     cleanupBeforeQuit: async () => {}, clearQuitCleanupForceExitTimer: noop, relaunchAfterQuitCleanupIfRequested: noop
   });
   runInContext(code, context);

@@ -275,10 +275,69 @@ Windows 的进程树强制终止绕过了 Agent 异步 shutdown。现于 Desktop
 
 本地 **17:57:15** 已完成恢复：核对当前 settings 与本轮合成范围完全一致后，恢复原 Windows settings 文件不存在的状态；fixture 和 Node host 正常关闭，App 保持退出，采集器为 0，保留用户历史、凭据、退出设置及允许常驻的 Memory。见 `controlled-settings-before-restoration.json`、`settings-restored.json`、`final-cleanup.json`。本轮没有新增模型请求计数或聊天端到端检索验收。IME、多屏/DPI、锁屏、真实应用长期稳定性、正式签名及既有 Windows 浏览器/Office/WPS 限制继续保留。
 
+## 2026-10-07：退出生命周期与 Windows 测试基线收敛
+
+本轮从 `8b12d2b8` 安全同步开始；fork 当前分支无新增提交，工作区初始干净。本机证据根目录为 `D:/memmy-agent/App/shell/desktop/release/quit-validation-20261007/`，报告与安装包不提交 Git。
+
+修复正常退出清理先将 `runtimeServices` 置空、导致超时兜底失去服务引用的问题：单次退出上下文保留服务及 Memory 策略，正常清理与兜底共用；超时后的异步返回不能再记录正常完成，重复退出不会重复清理。启动晚到的服务仍按该次退出策略处理。清理失败也执行尽力终止，避免直接退出后遗留所属服务。
+
+新增用户数据目录内 `quit-lifecycle.jsonl`，按 `quitId` 保存开始、History 排空、服务清理、正常完成或强制退出阶段。小型记录同步追加并 flush，不记录正文、token 或异常响应体；写盘失败不阻止退出，证据缺失仍须判未确认。5 秒是兜底触发时间；同步终止命令另共用 2 秒剩余预算，优先处理 Agent/recorder 进程树，不能宣称总退出耗时严格小于 5 秒。`force-complete` 仅指尽力终止调用返回，进程消失仍需独立验证。
+
+自动回归分别统计：
+
+| 层级 | 本轮结果 | 证据 |
+|---|---|---|
+| Desktop 完整回归 | **468 通过、0 失败、1 跳过** | `desktop-final.json` |
+| 统一 History（类型、lint、构建及测试） | **523 通过、0 失败、8 跳过** | `computer-history-validation-Id5qaP/results.json` |
+| 后端本地 API，含 3 项真实 HTTP SSE 生命周期回归 | **60 通过、0 失败、0 跳过** | `backend-local-api.json` |
+| 原生 Release CTest | **33 通过、0 失败、0 跳过** | `native-release.log`、`native-artifacts/release/` |
+| 原生 Debug CTest | **33 通过、0 失败、0 跳过** | `native-debug.log`、`native-artifacts/debug/` |
+
+Desktop 唯一跳过是 POSIX 符号链接保护/迁移，Windows Git Bash 的 `ln -s` 默认复制行为不能代表 POSIX 链接；Windows `.cmd` 迁移、旧 launcher 替换及无关文件保护均实际执行。Bash 解析显式支持 Git for Windows，自定义路径通过 `MEMMY_TEST_BASH`；源码断言统一 LF/CRLF，进程退出断言按平台语义并检查 PID 消失，升级 relay 保留 10 秒业务上限、将测试框架时限设为 15 秒。
+
+History 的 8 项跳过逐项保存在 `results.json`：1 项 POSIX 子进程信号、1 项文件 symlink 权限、2 项 Swift 原生采集、1 项 Mac helper 可执行权限、1 项 Mac 原生 ingest、1 项 Mac Electron helper，以及 1 项被统一入口过滤的 Windows 前台内容测试。最后一项不是本轮前台条件失败；原生 CTest 的前台合成用例本轮均实际通过。不能以原生 CTest 代替完整安装版操作。
+
+新增隔离测试执行实际生产退出回调和 5 秒计时器，覆盖重复退出、认证/停止响应超时、服务卡住、迟到响应、清理异常、终止异常、启动晚到服务，以及两种 Memory 策略。独立 Node 进程写入退出记录后立即退出，父进程确认记录落盘；真实合成 Agent 子进程及其 recorder 后代均验证被终止，持久 Memory 按策略保留或退出。首轮完整回归 **466 通过、2 失败、1 跳过** 保存在 `desktop-full.json`：新测试误从持久 Memory 的空 stdout 管道等待就绪，修正为独立就绪文件后完整复跑通过。首次沙箱内 `os.userInfo` 失败属于运行环境限制，改在正常用户环境执行；未删断言或弱化隐私规则。
+
+本轮类型检查通过；打包结束后开发目录已恢复 Node 24.21.0 / ABI 137，真实 SQLite 查询通过，见 `sqlite-restored.json`。Mac/Linux 分支自动回归保留，但共享退出上下文变更尚未在 Mac 真机重验。
+
+### 本轮测试包与安装
+
+通过官方 `scripts/package-win.sh --version 1.1.8 --arch x64 --edition cn --sign unsigned` 完整构建。首次构建的进程与工具会话消失，日志停在封装阶段、没有完成记录，原因未确立；未安装其不完整产物。`package.log`、`build-interruption.json` 保留，确认无残留构建进程并恢复开发 SQLite 后串行重试。重试 **25 分 34 秒**、exit 0，ASAR、资源、版本和 SQLite 后置检查通过，见 `package-retry.log`、`package-retry-result.json` 及 `release/logs/package-win-1.1.8-x64-cn-unsigned-20261007-104733.log`。旧记录中的 9 分钟是复用已编译产物的封装阶段，不能与本次完整构建入口直接比较。
+
+新包仍为 `D:/memmy-agent/App/shell/desktop/release/Memmy-1.1.8-win32-x64-cn-unsigned.exe`，**1.1.8 / Windows x64 / CN phone / NotSigned**，**355,185,605 bytes（338.7 MiB）**。校验见 `package-hashes.json`：
+
+| 文件 | SHA-256 |
+|---|---|
+| NSIS | `282570DFADEB2071E4DAD2C23DDE243C623C2B4C54CFE12FD5284466D9D1AE20` |
+| Desktop Memmy.exe | `32A1BCD106A542526FB468EF90F23F961DDE37B236FDCAC0C2CBD2DAF6302163` |
+| app.asar | `701586AB13C8CA00E7E3B96D2C71CAFF9CDBCC93207E41BEB11188D61523AC2D` |
+| 原生 helper（574,976 bytes，未变） | `2E77D871EF8F0397F0523C18FB0EAE712C5124D61AD58DA6CB02BE0F52945E1B` |
+
+包内与安装版隔离预检各 **8 通过、0 失败**，分别见 `packaged/preflight.json` 和 `installed/preflight.json`。覆盖固定 ASAR 外 helper、默认停止状态及旧白名单配置、三份 SQLite、共享 CLI、实际同步写入的退出日志与生产主进程接线。每次使用独立空 profile，不复用前次预检写过的 legacy 配置。安装于本地 **11:14:37** 返回 exit 0，目标仍为 `C:/Users/zephyr/AppData/Local/Programs/Memmy`，安装后三个关键文件哈希一致；见 `install-result.json`、`installed-hashes.json`。
+
+安装版于本地 **11:15:40** 启动，未指定开发 helper 覆盖。实际主页面截图非空、未刷新；`03:15:52.396 UTC` 首帧就绪，耗时 **11,273 ms**，随后 boot ready，见 `installed/startup-acceptance.json`。本地 **11:17:04** 经生产 API 开始唯一合成 fixture 录制，阳性标记和密码/普通 Edit/敏感子树过滤已检查；实际进程路径指向安装包内 helper，父进程为安装版 Agent，见 `installed/positive-capture.json`、`actual-helper-processes.json`。本轮 `modelSource = null`，没有变更模型设置，不新增真实模型/摘要质量或聊天端到端检索验收结论。
+
+### 本轮安装版托盘退出结果
+
+用户于本地 **12:15:06** 从真实托盘菜单退出。此前被动监测于 **12:14:42** 等待超时，原结果保留为 `installed/exit-processes-wait-timeout.json`；它发生在退出之前，不能算产品退出失败。用户确认后重新检查实际进程，更新 `installed/exit-processes.json`，未用测试工具强制结束 App。
+
+安装版退出审计为 **8 通过、0 失败、0 未确认**，见 `installed/exit-acceptance.json`，与上面的自动测试、两次组件预检分别统计：
+
+- 持久日志同一 `quitId = 86bdd63d-a0ec-4cd8-9e85-98ab57f7e638`、Desktop PID 22884，依次记录 `start → history-stopped → services-closed → cleanup-complete`。开始于 **04:15:06.803 UTC**，完成于 **04:15:07.274 UTC**，耗时 **471 ms**；没有强制退出阶段，关闭此前“是否触发 5 秒兜底”的未确认项。日志副本为 `installed/quit-lifecycle.jsonl`。
+- 最终 `recording_stopped / stop_command` 于 **04:15:06.889 UTC** 落盘，在真实退出开始后 **86 ms**，未将之前轮转事件代替最终停止。合成阳性标记存在，所有应用内容均来自唯一 fixture，密码、普通 Edit 及敏感子树标记没有落盘。
+- 实际 Desktop、Agent、recorder 均已退出。Memory PID **13260** 保留，与只读确认的 `stop_memory_service_on_exit = false` 一致；没有改动该设置。
+- 退出后仍打开的 fixture 确认收到新的阴性标记，四个事件文件保持 **3,395 / 3,395 / 603 / 3,409 bytes**，阴性标记未落盘。见 `installed/negative-ack.json`、`synthetic-events.jsonl`。本轮不据等待期间的段文件宣称完整长时间或连续分段验收。
+
+本地 **12:19:25** 核对当前 scope 与 QA 写入值完全一致后，恢复原 Windows settings 文件不存在的状态；fixture 和 Node host 正常结束。**12:19:50** 复查 App、Agent、recorder、fixture、host 均无残留，仅保留配置允许的 Memory；用户历史、凭据和模型设置未删除或修改。见 `installed/settings-restored.json`、`final-cleanup.json`。
+
+提交前复查将新增的两项真实 Windows 进程树测试明确限于 Windows：测试的是 `taskkill /T`，普通 POSIX Agent 子进程并非 detached 进程组，合成 fixture 也没有真实 Agent 的优雅退出处理，不能沿用 Windows 后代终止断言。该文件调整后在 Windows 复跑 **3 通过、0 失败、0 跳过**，见 `force-platform-final.json`，不与完整回归相加。Mac 的共享退出逻辑及其实际子进程行为仍需在 Mac 重新验证。
+
 ## 交付边界
 
 - Windows EXE 的构建、包内固定路径、必要许可证及 unsigned NSIS 分发已接入；正式代码签名尚未验收。
 - Windows 实体停止热键已有一次真实安装版通过证据；IME、多显示器/DPI、系统锁屏行为、真实应用兼容性和长时间采集仍待验收。
-- 录制中的托盘退出已确认最终事件排空、进程清理及停止后的阴性标记；5 秒退出兜底是否触发仍缺持久化日志证据，不能宣称该项通过。
+- 录制中的托盘退出已确认最终事件排空、进程清理及停止后的阴性标记；2026-10-07 新包持久日志确认本次正常清理完成且未触发兜底。卡住/失败时的强制退出有隔离自动测试，未对用户真实安装版注入故障。
+- 本轮共享退出上下文和测试基线变更尚待 Mac 真机回归，不能沿用此前 Mac 结果宣称新提交已经通过。
 - Windows 已知浏览器仍拒绝采集；Office/WPS 正文选择器和应用图标尚未产品化。
 - 受控组件/fixture、真实安装版 UI、真实模型请求和聊天端到端检索属于不同层级，不能互相代替或合并计数。

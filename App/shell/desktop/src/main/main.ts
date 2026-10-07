@@ -123,6 +123,7 @@ import {
 } from "./windows-launch-at-login.js";
 import { resolveComputerHistoryMarkdownPath } from "./computer-history-markdown.js";
 import { stopComputerHistoryBeforeExit } from "./computer-history-exit.js";
+import { writeQuitDiagnostic, type QuitDiagnostic } from "./quit-diagnostics.js";
 
 let mainWindow: BrowserWindow | null = null;
 let petWindow: BrowserWindow | null = null;
@@ -154,6 +155,16 @@ let isQuitCleanupInProgress = false;
 let isQuitCleanupComplete = false;
 let stopMemoryServiceForCurrentQuit = false;
 let quitCleanupForceExitTimer: ReturnType<typeof setTimeout> | null = null;
+interface QuitCleanupContext {
+  id: string;
+  startedAt: number;
+  stopMemory: boolean;
+  services: ManagedRuntimeServices | null;
+  servicesClose: Promise<void> | null;
+  phase: string;
+  outcome: "pending" | "complete" | "failed" | "forced";
+}
+let quitCleanupContext: QuitCleanupContext | null = null;
 let areIpcHandlersRegistered = false;
 let isBootReady = false;
 let bootStage = "pending";
@@ -420,8 +431,14 @@ async function boot(): Promise<void> {
         : undefined
     });
     if (isQuitting) {
-      await runtimeServices.close({ stopMemory: stopMemoryServiceForCurrentQuit });
+      const lateServices = runtimeServices;
       runtimeServices = null;
+      if (quitCleanupContext) {
+        quitCleanupContext.services = lateServices;
+        await closeRuntimeForQuit(quitCleanupContext);
+      } else {
+        await lateServices.close({ stopMemory: stopMemoryServiceForCurrentQuit });
+      }
       return;
     }
     bootStage = "local-api";
@@ -5058,15 +5075,30 @@ app.on("before-quit", (event) => {
 
   isQuitCleanupInProgress = true;
   stopMemoryServiceForCurrentQuit = readStopMemoryServiceOnExitSetting();
+  const quit: QuitCleanupContext = {
+    id: randomUUID(), startedAt: Date.now(), stopMemory: stopMemoryServiceForCurrentQuit,
+    services: runtimeServices, servicesClose: null, phase: "preparing", outcome: "pending"
+  };
+  quitCleanupContext = quit;
+  recordQuitDiagnostic(quit, "start");
   void writePackagedStartupLog("quit:cleanup-start");
   armQuitCleanupForceExitTimer();
   void cleanupBeforeQuit()
-    .catch(async (error: unknown) => {
+    .catch((error: unknown) => {
+      if (quit.outcome !== "pending") return;
+      quit.outcome = "failed";
+      recordQuitDiagnostic(quit, "cleanup-failed");
       console.warn("quit cleanup failed:", error);
-      await writePackagedStartupLog(`quit:cleanup-failed\n${formatStartupError(error)}`);
+      void writePackagedStartupLog(`quit:cleanup-failed\n${formatStartupError(error)}`);
+      forceQuitCleanup(quit);
     })
     .finally(() => {
+      if (quit.outcome === "forced") return;
       clearQuitCleanupForceExitTimer();
+      if (quit.outcome === "pending") {
+        quit.outcome = "complete";
+        recordQuitDiagnostic(quit, "cleanup-complete");
+      }
       isQuitCleanupComplete = true;
       isQuitCleanupInProgress = false;
       relaunchAfterQuitCleanupIfRequested();
@@ -5091,14 +5123,65 @@ function relaunchAfterQuitCleanupIfRequested(): void {
 
 function armQuitCleanupForceExitTimer(): void {
   clearQuitCleanupForceExitTimer();
+  const quit = quitCleanupContext;
   quitCleanupForceExitTimer = setTimeout(() => {
-    console.warn("quit cleanup timed out; forcing app exit");
-    // Apply the same service-lifecycle choice when graceful cleanup times out.
-    runtimeServices?.terminateSync({ stopMemory: stopMemoryServiceForCurrentQuit });
-    relaunchAfterQuitCleanupIfRequested();
-    app.exit(0);
+    if (quit) forceQuitCleanup(quit);
   }, APP_QUIT_CLEANUP_FORCE_EXIT_DELAY_MS);
   quitCleanupForceExitTimer.unref?.();
+}
+
+function forceQuitCleanup(quit: QuitCleanupContext): void {
+  if (quit.outcome === "complete" || quit.outcome === "forced") return;
+  quit.outcome = "forced";
+  clearQuitCleanupForceExitTimer();
+  recordQuitDiagnostic(quit, "force-start");
+  console.warn("quit cleanup timed out; forcing app exit");
+  try {
+    // Keep ownership even after the normal path detaches the global reference.
+    quit.services?.terminateSync({ stopMemory: quit.stopMemory, timeoutMs: 2_000 });
+    recordQuitDiagnostic(quit, "force-complete");
+  } catch {
+    recordQuitDiagnostic(quit, "force-failed");
+  } finally {
+    relaunchAfterQuitCleanupIfRequested();
+    app.exit(0);
+  }
+}
+
+function recordQuitDiagnostic(quit: QuitCleanupContext, event: QuitDiagnostic["event"]): void {
+  if (!app.isPackaged) return;
+  writeQuitDiagnostic(join(app.getPath("userData"), "quit-lifecycle.jsonl"), {
+    schemaVersion: 1, quitId: quit.id, pid: process.pid, timestamp: new Date().toISOString(),
+    elapsedMs: Date.now() - quit.startedAt, stopMemory: quit.stopMemory, phase: quit.phase, event
+  });
+}
+
+async function closeRuntimeForQuit(quit: QuitCleanupContext): Promise<void> {
+  const services = quit.services;
+  if (!services) return;
+  if (quit.outcome !== "pending") {
+    // Startup may materialize a service after shutdown has already settled.
+    services.terminateSync({ stopMemory: quit.stopMemory, timeoutMs: 2_000 });
+    return;
+  }
+  if (!quit.servicesClose) {
+    quit.servicesClose = (async () => {
+      if (process.platform === "win32") {
+        quit.phase = "history-stop";
+        try {
+          await stopComputerHistoryBeforeExit(services.agentGateway);
+          if (quit.outcome === "pending") recordQuitDiagnostic(quit, "history-stopped");
+        } catch {
+          if (quit.outcome === "pending") recordQuitDiagnostic(quit, "history-stop-failed");
+        }
+      }
+      if (quit.outcome !== "pending") return;
+      quit.phase = "services-close";
+      await services.close({ stopMemory: quit.stopMemory });
+      if (quit.outcome === "pending") recordQuitDiagnostic(quit, "services-closed");
+    })();
+  }
+  await quit.servicesClose;
 }
 
 function hideAppShellForQuit(): void {
@@ -5175,23 +5258,20 @@ async function cleanupBeforeQuit(): Promise<void> {
   ipcMain.removeListener("memmy:analytics-client-id", handleAnalyticsClientId);
   areIpcHandlersRegistered = false;
   destroyMenuBarTray();
-  const services = runtimeServices;
+  const quit = quitCleanupContext!;
   runtimeServices = null;
   memoryServiceControl = null;
   const backend = localBackend;
   localBackend = null;
-  if (process.platform === "win32" && services) {
-    try {
-      await stopComputerHistoryBeforeExit(services.agentGateway);
-      console.info("[desktop] Computer History exit stop completed");
-    } catch {
-      // Keep the existing bounded process-tree cleanup if the Agent is unavailable.
-      console.warn("[desktop] Computer History exit stop failed or timed out; continuing process cleanup");
-    }
-  }
-  await services?.close({ stopMemory: stopMemoryServiceForCurrentQuit });
+  await closeRuntimeForQuit(quit);
+  if (quit.outcome !== "pending") return;
+  quit.phase = "backend-close";
   await backend?.close();
+  if (quit.outcome !== "pending") return;
+  quit.phase = "renderer-close";
   await stopPackagedRendererServer();
+  if (quit.outcome !== "pending") return;
+  quit.phase = "analytics";
   await sendAppExitEventBeforeQuit();
 }
 

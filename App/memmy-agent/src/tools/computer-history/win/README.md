@@ -56,6 +56,18 @@ node scripts/internal/shared/validate-computer-history.mjs
 
 入口覆盖共享业务、Windows 接入、前端、类型、lint 和构建，并保存逐项报告。可通过 `--native-bin <绝对构建目录>` 加入生产 EXE 的生命周期验证。平台条件、跳过原因及 Mac 接续步骤见 [阶段基线与验证说明](../VALIDATION.md)。
 
+Desktop 退出、进程树和安装脚本回归单独从仓库根目录运行，不与 History 计数合并：
+
+```powershell
+node node_modules/vitest/vitest.mjs run App/shell/desktop/tests --maxWorkers=2 --reporter=default --reporter=json --outputFile=App/shell/desktop/release/desktop-tests.json
+```
+
+Windows 的脚本测试自动寻找标准安装位置的 Git Bash；自定义位置可设置 `MEMMY_TEST_BASH` 为其 `bash.exe` 完整路径。缺失 Bash 应修复环境，不能将其当作平台跳过。POSIX 文件符号链接用例在 Windows 明确跳过，Windows `.cmd` 迁移与无关文件保护仍执行。打包会重建 Electron SQLite ABI；回归测试应在打包前运行，打包后恢复开发目录的 Node ABI，再执行 Node 测试，不能并发混用。
+
+`runtime-force-exit.test.ts` 的两项真实后代进程终止用例仅在 Windows 执行，验证 `taskkill /T` 与两种 Memory 退出策略；Mac/Linux 明确跳过该 Windows 断言，仍需执行各自的真实服务生命周期回归。
+
+安装版退出会在用户数据目录写入 `quit-lifecycle.jsonl`。按同一 `quitId` 检查 `start`、`history-stopped`、`services-closed`、`cleanup-complete`；`history-stop-failed`、`cleanup-failed`、`force-start` 必须单独报告。5 秒触发退出保护，同步终止命令再共用 2 秒预算；这不是严格的总退出耗时保证。`force-complete` 只表示已执行尽力终止，仍需检查实际进程是否消失。日志写入失败不阻止退出，因此日志缺失只能判未确认，不能据此声称没有兜底。
+
 下面是从 `App/memmy-agent` 目录直接运行适配器测试的入口；设置二进制目录后会尝试前台内容测试，属于交互验证：
 
 ```powershell

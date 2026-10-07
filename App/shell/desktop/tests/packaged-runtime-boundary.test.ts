@@ -1,7 +1,10 @@
-import { readFileSync } from "node:fs";
+import { readFileSync as readRawFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 import { parse as parseYaml } from "yaml";
+
+// Source contracts should behave identically in LF and CRLF checkouts.
+const readFileSync = (path: string, encoding: "utf8") => readRawFileSync(path, encoding).replace(/\r\n/g, "\n");
 
 const mainSourcePath = fileURLToPath(new URL("../src/main/main.ts", import.meta.url));
 const preloadSourcePath = fileURLToPath(new URL("../src/preload/preload.cts", import.meta.url));
@@ -404,8 +407,9 @@ describe("desktop packaged runtime boundaries", () => {
       '$unpacked_runtime/memory/node_modules/onnxruntime-node/bin/napi-v3/darwin/$target_cpu/libonnxruntime*.dylib'
     );
     const asarGuardSource = readFileSync(verifyPackagedAsarPath, "utf8");
-    expect(asarGuardSource).toContain(
-      'if (platform === "win32") {\n  requiredFiles.push(\n    "dist/runtime/memory/package.json"'
+    // Windows also validates the History helper before adding the Memory files.
+    expect(asarGuardSource).toMatch(
+      /if \(platform === "win32"\) \{[\s\S]*?requiredFiles\.push\(\s*"dist\/runtime\/memory\/package.json"/u
     );
   });
 
@@ -1336,7 +1340,8 @@ describe("desktop packaged runtime boundaries", () => {
     expect(mainSource).toContain("async function cleanupBeforeQuit()");
     expect(mainSource).toContain("event.preventDefault()");
     expect(mainSource).toContain("readStopMemoryServiceOnExitSetting()");
-    expect(mainSource).toContain("await services?.close({ stopMemory: stopMemoryServiceForCurrentQuit })");
+    expect(mainSource).toContain("await closeRuntimeForQuit(quit)");
+    expect(mainSource).toContain("await services.close({ stopMemory: quit.stopMemory })");
     expect(mainSource).toContain("app.quit()");
     expect(runtimeServicesSource).toContain("STOP_MANAGED_CHILD_GRACE_MS");
     expect(runtimeServicesSource).toContain("waitForManagedChildExit(child, STOP_MANAGED_CHILD_GRACE_MS)");
