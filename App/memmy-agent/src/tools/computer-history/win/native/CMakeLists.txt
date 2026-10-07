@@ -67,6 +67,10 @@ if(MEMMY_HISTORY_BUILD_TESTS)
   enable_testing()
   memmy_add_recorder(memmy-history-recorder-testhooks 1)
 
+  # Synthetic-document diagnostics only. Never built or staged for production.
+  add_executable(memmy-history-capability-probe tests/diagnostics/capability_probe.cpp src/win/identity.cpp)
+  target_link_libraries(memmy-history-capability-probe PRIVATE memmy_history_core ole32 oleaut32 uiautomationcore)
+
   add_executable(memmy-history-unit-tests tests/unit/unit_tests.cpp)
   target_link_libraries(memmy-history-unit-tests PRIVATE memmy_history_core)
   target_compile_definitions(memmy-history-unit-tests PRIVATE

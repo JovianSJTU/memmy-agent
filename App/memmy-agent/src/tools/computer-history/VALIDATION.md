@@ -341,3 +341,68 @@ History 的 8 项跳过逐项保存在 `results.json`：1 项 POSIX 子进程信
 - 本轮共享退出上下文和测试基线变更尚待 Mac 真机回归，不能沿用此前 Mac 结果宣称新提交已经通过。
 - Windows 已知浏览器仍拒绝采集；Office/WPS 正文选择器和应用图标尚未产品化。
 - 受控组件/fixture、真实安装版 UI、真实模型请求和聊天端到端检索属于不同层级，不能互相代替或合并计数。
+
+## 2026-10-07：第一步——四层正文采集诊断
+
+本轮以 `8115b1d8` 为基线，只建立并运行诊断，不实施第二步应用适配，不修改生产隐私策略。新增测试专用 `memmy-history-capability-probe` 与仓库根目录的 `scripts/internal/win/history-capability*.mjs`；使用说明见 [诊断 README](win/native/tests/diagnostics/README.md)。证据根目录为 `D:/memmy-agent/App/shell/desktop/release/capability-validation-20261007/`，不提交二进制、原始报告或合成 profile。
+
+诊断分别留存系统 UIA 的实际 TextPattern 正文、生产 EXE 原始 stdout、实际 `SnapshotNormalizer.normalizeEvents()` 的返回值、实际 `RecordingWriter` 写出的 JSONL。Node 侧只在测试进程临时旁路复制输入/返回值，不改传入数据或生产方法的返回结果。原生生产握手验证 `testHooks=false`。采集先于原始 UIA 探测，避免先用宽松探测器预热后再声称产品冷启动成功。外部 watcher 在整轮期间检查前台切换（含离开后返回）、PID/创建时间/EXE/HWND 和窗口标题；原始探测另做前后核验。所有真实应用用例均通过这些条件检查。
+
+这是**真实应用中的合成文档 + 生产采集组件链路**，不是安装版完整 App 验收。没有启动 Memmy、修改用户观察配置、调用真实模型或重新生成安装包。工具采用独立诊断预算 4000 ms；生产仍为查询 650 ms / worker 1500 ms，不能用探测器成功宣称生产时延达标。
+
+### 环境与独立检查
+
+- Windows x64、Node **24.21.0**、MSVC **19.44.35229.0**，Release 静态 CRT。本轮使用新构建的生产 EXE（574,976 bytes），并非故障注入版本；SHA-256 为 `CC7329F0C4E7CFAE4991F73166612F43580E1A4319CF0A991FBFBAB9A6AA4A49`。这不是此前安装包内 helper 的哈希，不能混用。
+- 诊断 EXE SHA-256：`B51153CC816A4CA40B3088C9DEC94FA318E730144C68F3806FE22263A5FAC13E`。仅 `MEMMY_HISTORY_BUILD_TESTS=ON` 时构建，不进入生产打包目标。
+- Word **16.0.14334.20918**；VS Code **1.139.1**。Word 为一页合成 RTF；VS Code 为合成 TXT，分别使用 `auto`、`on`、`off` 的隔离 profile，关闭扩展，不更改用户日常 profile。文档在 `documents/`。
+
+| 检查层级 | 本轮结果 | 本地证据 |
+|---|---|---|
+| 诊断归因逻辑 | **9 通过、0 失败、0 跳过** | `analysis-tests.tap`，入口 `npm run test:history-capability` |
+| 四层合成对照 | **5 个对照均符合预期** | `fixture-final/results.json`；首次结果保留在 `fixture-attempt-01/` |
+| 原生 Release CTest | **33 通过、0 失败、0 跳过** | `native-release.log`、`native-release.xml`；详细 fixture 在 `C:/Users/zephyr/AppData/Local/memmy-history-recorder/test-artifacts/release/` |
+| 现有 ASAR 打包保护 | **2 通过、0 失败、1 跳过** | `packaging-tests.json`；跳过 Windows 不能执行的 Mac Electron/Swift helper 用例 |
+| 空 AutomationId 策略契约 | TS 拒绝；生产原生返回 `blocked / policy_invalid` | `policy-contract.json` |
+
+5 个合成对照分别是：正确正文策略四层都出现标记；不提供正文选择器；生产选择器错误；诊断选择器错误但产品仍成功；目标故意置于后台。后台项验证“正确拒绝无效前提”，不能算内容采集成功。密码、普通 Edit、镜像子节点和敏感子树标记在生产三层均未泄露。归因单测还验证前台 ABA、身份变化、探测超时、适配层丢失和写盘丢失的不同分类；这些故障分类单测不是实际应用发生对应故障的证据。
+
+### Word：已有接口能完成正文链路，缺少默认接入
+
+| 合成用例 | 系统 UIA | 生产 C++ | TS / 文件 | 结论 |
+|---|---|---|---|---|
+| 外层 `Document`，空正文规则 | 有正文；ID 为空 | 同 RuntimeId 节点存在，但无正文 | 均无正文 | 未匹配正文策略 |
+| 子节点 `Edit + Body`，空正文规则 | 有正文，`IsPassword=false` | 同节点被标为 `edit_control` | 均无正文 | 原生策略排除已确认 |
+| `Edit + Body`，配置现有正文规则 | 有正文 | 有正文 | 均有正文 | **完整链路通过，两次重复一致** |
+
+对应目录：`word-document-default/`、`word-body-default/`、`word-body-explicit/`、`word-body-explicit-repeat/`。空正文规则模拟当前默认生成的应用规则，授权仍只绑定本次合成窗口。显式规则仅为现有协议的 `documentRegions: [{controlType: "Edit", automationId: "Body"}]`，没有修改 C++ 或 TS 过滤器。
+
+因此，不能根据“Word 外层 Document 的 AutomationId 为空”推断 Word 必须先扩展选择器协议。本机可用的正文子节点已经有 `Body` ID。证据仅覆盖这一版本的一页 RTF、这个正文标记，不证明多页完整性、滚动、不同视图、受保护文档或所有 Office 版本。
+
+首次 `word-attempt-01/` 没有命中诊断正文，是测试清单使用了不完整节点名称：实际 UIA Name 带有 `兼容性模式` 后缀。原始报告、完整 metadata 和后续纠正均保留；它不是 Word 无接口或权限不足的证据。
+
+### VS Code：应用辅助功能状态与生产选择器是两个独立问题
+
+`code-auto-attempt-01/` 中，profile 为 `editor.accessibilitySupport=auto`，截图在采集前已显示 **Screen Reader Optimized**。系统探测读到合成正文；生产流含**同一 RuntimeId** 的 `Edit` 节点，AutomationId 为空、`IsPassword=false`、支持 TextPattern，但正文被标记为 `edit_control` 并排除。显式 `on` 的 `code-on-attempt-01/`、`code-on-repeat/` 重复得到同样结论。
+
+原始树同时发现正文节点的祖先 `Group` 带有 `workbench.parts.editor` ID，为后续范围识别提供候选依据。此 ID 本身尚不能证明该范围内所有 Edit 都是正文，查找/替换等阴性场景必须另测。空 ID 在当前 TS 和原生策略中均被拒绝，不能用现有配置直接把该正文节点放行；也不能简单允许所有空 ID Edit 或整个 `RootWebArea`。
+
+显式 `off` 后，正文候选节点的 Name 变为应用提示 `The editor is not accessible at this time...`。最初两轮用文件名选择器没有命中；第三轮 `code-off-label-probe/` 按实际标签读取 TextPattern，调用均成功，但返回的就是该不可访问提示，**不是正文**。这说明“支持 TextPattern / HRESULT 成功”也不能等同于读到了文档。当前只证明本版本关闭模式下这些编辑器节点没有提供正文，不能扩大为 Windows 没有 UIA 接口。
+
+`auto` 结果不能证明完全没有其他辅助功能客户端时也会自动开启：本机存在桌面工具，本轮只避免请求其文字树，并记录了实际状态。没有据此要求所有用户必须手动开启，也没有把辅助功能设置当成 Windows 隐私授权。
+
+`code-off-attempt-01/` 的生产流另有 **1 次 `worker_timeout`**；`code-off-repeat/` 另有 **1 次 `budget_ms` 截断**。这些原始事件仍保留在 `native.jsonl`、`result.json`，原因未进一步确立，不能算无异常的稳定性通过。其他窗口的成功也不抵消它们。
+
+### 证据边界与第二步实施条件
+
+真实应用共 **11 轮探索性记录**，逐轮结论在 `real-application-summary.json`；不把全部有效前台条件或诊断进程 exit 0 合并为“11 项功能通过”。其中 Word 5 轮（包含首次错误诊断选择器），VS Code 6 轮（包含辅助功能关闭及其纠正探测）。本轮没有发现已存在于原生输出的正文在 TS 或文件层丢失；这不是对未来新选择器的自动保证。
+
+开发期间还有两类工具问题已独立处理：初次 MSVC 构建将 CONTROLTYPEID 指针误写为 long 指针，修正测试代码后构建通过；沙箱下 tsx 的 `os.userInfo()` 报 ENOMEM，换正常用户执行环境后运行。空 ID 契约检查首次误把策略拒绝的 exit code 预期为 2；实际 snapshot 入口返回 exit 3 和 `policy_invalid`，保留 `policy-contract-first.json`，最终同时断言协议拒绝原因与正确退出码。均不归因于产品采集能力。
+
+下一步据此拆分实施，不做通用空 ID 放行：
+
+1. **先交付 Word 的最小产品接入。** 为已绑定/允许的 Word 应用生成现有 `Edit + Body` 正文策略，保留密码、敏感 ID、输入子树、窗口身份和最终提交检查。先验证多页、滚动、视图切换、查找/替换和对话框；若 `Body` 只覆盖局部页，再评估读取外层 Document 所需的受限协议扩展，而非预先假定必须重写。
+2. **再实现 VS Code 的应用范围选择器。** 以 `workbench.parts.editor` 祖先为候选边界，补足区分正文与编辑器内查找/替换等输入的证据。生产 C++、worker 协议校验、TS 策略与归一化需一致验证新选择规则；为空 ID 正文设计显式受限授权，不依赖动态文件名当作权限。Chat、终端、快速打开、搜索、密码/敏感节点必须有阴性用例。
+3. **把辅助功能状态和性能作为可观测结果。** 记录 auto/on/off 下实际正文可用性；不可访问提示不能进入正文摘要。对上述超时/预算截断补充重复测量和恢复检查，保留现有预算及失败封闭策略，不靠放宽预算制造通过。
+4. **应用适配合入后再做安装版验收。** 沿用本轮四层证据，新包验证默认规则生成、包内 helper、实际 JSONL/摘要/检索；再扩展 Excel/PPT/WPS。浏览器、网站规则、图标、鼠标语义、IME/DPI/锁屏与长稳不属于本次完成范围。
+
+本轮合成应用窗口已正常关闭，未写入用户原有文档。后续不需要用户先修改系统权限或安装新的采集运行时；只有具体应用在验证中确实需要人工操作时再说明原因。

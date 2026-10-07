@@ -48,6 +48,8 @@ node dist/tools/computer-history/core/summarize-history.js --file "D:\history-va
 
 ## 验证
 
+真实应用正文缺失的定位入口见 [四层采集诊断](native/tests/diagnostics/README.md)：分别保存系统 UIA、生产 C++ 输出、实际 TypeScript 归一化结果和最终 JSONL，并核验前台及进程身份。先运行合成阳性/阴性对照，再测真实应用的合成文档；原始 UIA 诊断成功不等于产品采集成功。它只在测试构建中提供，不进入安装包，实测结论见 VALIDATION.md 的 2026-10-07 四层诊断记录。
+
 日常回归优先在仓库根目录运行统一入口：
 
 ```powershell
