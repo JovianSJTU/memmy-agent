@@ -543,6 +543,45 @@ TEST(scoped_editor_discards_label_only_and_failed_reads) {
   CHECK(node.documentStatus == "available" && node.text.has_value());
 }
 
+TEST(word_scope_requires_class_ancestry_and_correct_application) {
+  const auto good = R"({"version":1,"applications":[{"pid":4242,"executable":"C:\\Office\\WINWORD.EXE","documentRegions":[{"controlType":"Document","automationId":"","scope":"word.document"}]}]})";
+  auto parsed = policy::Parse(good);
+  CHECK(parsed.policy && policy::HasWordDocumentScope(parsed.policy->applications[0]));
+  CHECK(!policy::MatchesSelector(parsed.policy->applications[0].documentRegions, classify::kDocument, L""));
+  Json input = *ParseJsonStrict(good, 32);
+  input["applications"][0]["executable"] = "C:\\Apps\\Other.exe";
+  CHECK(!policy::Parse(DumpJson(input)).policy);
+  input = *ParseJsonStrict(good, 32);
+  input["applications"][0]["documentRegions"][0]["controlType"] = "Edit";
+  CHECK(!policy::Parse(DumpJson(input)).policy);
+
+  ResponseFixture f;
+  f.policy.applications[0].executable = L"C:\\Office\\WINWORD.EXE";
+  f.policy.applications[0].documentRegions = {{classify::kDocument, L"", false, true}};
+  const Json nodes = Json::array({f.Node("Window", 0, -1, {{"className", "OpusApp"}}),
+    f.Node("Pane", 1, 0, {{"className", "_WwF"}}), f.Node("Pane", 2, 1, {{"className", "_WwB"}}),
+    f.Node("Document", 3, 2, {{"className", "_WwG"}, {"name", "synthetic.rtf"}, {"text", "WORD-BODY"}, {"documentStatus", "available"}})});
+  CHECK(f.Validate(f.Response(nodes)) == "ok");
+  for (const auto& mutate : std::vector<std::function<void(Json&)>>{
+      [](Json& n) { n[0]["className"] = "#32770"; },
+      [](Json& n) { n[1]["className"] = "Search"; },
+      [](Json& n) { n[2].erase("className"); },
+      [](Json& n) { n[3]["className"] = "RichEdit"; },
+      [](Json& n) { n[2]["controlType"] = "Group"; },
+      [](Json& n) { n[1]["password"] = nullptr; },
+      [](Json& n) { n[3]["password"] = true; },
+      [](Json& n) { n[2]["missing"] = Json::array({"automationId"}); },
+      [](Json& n) { n[3]["automationId"] = "search"; },
+      [](Json& n) { n[3].erase("documentStatus"); },
+      [](Json& n) { n[3]["value"] = "private input"; }}) {
+    Json changed = nodes; mutate(changed);
+    CHECK(f.Validate(f.Response(changed)) == "worker_privacy_violation");
+  }
+  Json descendants = nodes;
+  descendants.push_back(f.Node("Text", 4, 3, {{"name", "private input"}}));
+  CHECK(f.Validate(f.Response(descendants)) == "worker_privacy_violation");
+}
+
 TEST(scoped_editor_rejects_sibling_input_echoes) {
   ResponseFixture f;
   auto& rule = f.policy.applications[0];

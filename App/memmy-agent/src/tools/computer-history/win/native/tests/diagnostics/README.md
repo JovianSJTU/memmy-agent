@@ -75,6 +75,13 @@ original negative control. Set `useApplicationDefaults: true` to call the real
 current Word / VS Code defaults. Explicit `documentRegions: []` still disables defaults.
 Compare these modes to distinguish missing product configuration from native capability.
 
+`rangeGeometry: true` additionally records `GetBoundingRectangles` for the matched DocumentRange
+and up to eight lines (256 characters each). Every moved line is checked against DocumentRange
+endpoints before reading; providers may otherwise move into adjacent controls. Geometry is
+diagnostic evidence only and does not change production visibility or summary inputs. Empty
+rectangles do not prove a line is absent from the screen. ClassName, native window class and HWND
+metadata help evaluate app-specific document ancestry without granting production permission.
+
 ```powershell
 node --import tsx scripts/internal/win/history-capability.mjs --case D:/memmy-history-qa/word.json --native-bin D:/memmy-history-qa/build/release/memmy-history-recorder.exe --probe-bin D:/memmy-history-qa/build/release/memmy-history-capability-probe.exe --report-dir D:/memmy-history-qa/word-attempt-01
 ```

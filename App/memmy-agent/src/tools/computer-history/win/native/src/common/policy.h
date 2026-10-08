@@ -18,6 +18,7 @@ struct ElementSelector {
   long controlType = 0;
   std::wstring automationId;
   bool vscodeEditor = false;  // fixed, bounded ancestry; never a wildcard empty AutomationId
+  bool wordDocument = false;
 };
 
 struct AppRule {
@@ -89,5 +90,6 @@ bool IsSensitiveAutomationId(const Policy& policy, const AppRule& rule, std::wst
 bool MatchesSelector(const std::vector<ElementSelector>& selectors, long controlType,
                      std::wstring_view automationId);
 bool HasVsCodeEditorScope(const AppRule& rule);
+bool HasWordDocumentScope(const AppRule& rule);
 
 }  // namespace memmy::policy

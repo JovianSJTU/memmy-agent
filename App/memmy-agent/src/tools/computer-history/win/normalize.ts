@@ -2,7 +2,7 @@ import path from "node:path";
 import { scrubRecord, type HistoryEvent } from "../core/recording.js";
 import { authorizedRule, pathKey, windowsApplicationId, type NativePolicy } from "./policy.js";
 import type { NativeNode, NativeSnapshotEvent } from "./protocol.js";
-import { documentTextIsLabel, isVsCodeEditorBody } from "./document-regions.js";
+import { documentTextIsLabel, isVsCodeEditorBody, isWordDocument } from "./document-regions.js";
 
 const structural = new Set(["Window", "Pane", "Group", "Custom", "MenuBar", "StatusBar", "Tab", "ToolBar",
   "List", "Tree", "DataGrid", "Header", "Table", "TitleBar", "SemanticZoom", "AppBar"]);
@@ -79,7 +79,7 @@ export class SnapshotNormalizer {
       }
       const content = fields.some((field) => node[field] !== undefined);
       const masked = sensitive.has(node.automationId.toLowerCase()) || node.password !== false;
-      const scoped = isVsCodeEditorBody(node, nodes, rule);
+      const scoped = isVsCodeEditorBody(node, nodes, rule) || isWordDocument(node, nodes, rule);
       const document = matches(rule.documentRegions, node) || scoped;
       const search = node.controlType === "Edit" && node.focused && matches(rule.searchFields, node);
       if ((node.documentStatus && !scoped) || (scoped && content && node.documentStatus !== "available")) return invalid();
@@ -93,7 +93,8 @@ export class SnapshotNormalizer {
       if (node.value !== undefined && (!search || document)) return invalid();
       if (sensitive.has(node.automationId.toLowerCase()) || node.password === true
           || (node.password === null && (node.controlType === "Edit" || !structural.has(node.controlType)))
-          || node.controlType === "Edit" || ((node.text !== undefined || node.visibleText !== undefined) && document)) blocks.add(node.key);
+          || node.controlType === "Edit" || (scoped && !!node.documentStatus)
+          || ((node.text !== undefined || node.visibleText !== undefined) && document)) blocks.add(node.key);
       for (const field of fields) {
         const units = node[field]?.length ?? 0;
         if (units > policy.limits.maxNodeTextChars) return invalid();
@@ -117,6 +118,8 @@ export class SnapshotNormalizer {
         key: node.key, parentKey: node.parentKey, controlType: node.controlType,
         providerOffscreen: node.providerOffscreen, ...(node.redaction ? { redaction: node.redaction } : {}),
         ...(node.documentStatus ? { documentStatus: node.documentStatus } : {}),
+        ...(node.documentStatus === "available" && !node.redaction && isVsCodeEditorBody(node, nodes, rule)
+          ? { documentContext: "vscode.editor" as const } : {}),
         ...Object.fromEntries(fields.filter((field) => node[field] !== undefined).map((field) => [field, node[field]])),
       })) },
     } satisfies HistoryEvent);

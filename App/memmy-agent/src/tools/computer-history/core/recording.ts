@@ -24,6 +24,8 @@ export interface CaptureNode {
   value?: string;
   redaction?: string;
   documentStatus?: "available" | "label_only" | "read_failed";
+  /** Assigned by the validated adapter, not by the native provider. Full text is context, not visibility evidence. */
+  documentContext?: "vscode.editor";
   providerOffscreen: boolean;
 }
 

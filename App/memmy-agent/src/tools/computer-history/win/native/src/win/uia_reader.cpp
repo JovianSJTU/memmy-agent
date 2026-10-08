@@ -34,7 +34,7 @@ class Traversal {
     for (const PROPERTYID property :
          {UIA_ControlTypePropertyId, UIA_IsPasswordPropertyId, UIA_AutomationIdPropertyId, UIA_ProcessIdPropertyId,
           UIA_HasKeyboardFocusPropertyId, UIA_IsOffscreenPropertyId, UIA_BoundingRectanglePropertyId,
-          UIA_RuntimeIdPropertyId, UIA_IsTextPatternAvailablePropertyId, UIA_IsValuePatternAvailablePropertyId}) {
+          UIA_RuntimeIdPropertyId, UIA_IsTextPatternAvailablePropertyId, UIA_IsValuePatternAvailablePropertyId, UIA_ClassNamePropertyId}) {
       if (FAILED(cache_->AddProperty(property))) return false;
     }
     return SUCCEEDED(automation->get_ControlViewWalker(&walker_));
@@ -43,6 +43,8 @@ class Traversal {
   IUIAutomationCacheRequest* Cache() const { return cache_.Get(); }
 
   void Run(IUIAutomationElement* root, protocol::WorkerResponse& response) {
+    UIA_HWND handle = nullptr;
+    if (SUCCEEDED(root->get_CurrentNativeWindowHandle(&handle))) rootHwnd_ = reinterpret_cast<HWND>(handle);
     struct Frame {
       ComPtr<IUIAutomationElement> element;
       int depth;
@@ -154,9 +156,13 @@ class Traversal {
     return Bounded(name.View());
   }
 
-  bool LiveScopedDocumentAuthorized(IUIAutomationElement* element) {
+  bool LiveScopedDocumentAuthorized(IUIAutomationElement* element, bool word) {
     ComPtr<IUIAutomationElement> current = element;
-    const std::array<long, 4> types = {classify::kEdit, classify::kText, classify::kGroup, classify::kGroup};
+    const std::array<long, 4> types = word
+      ? std::array<long, 4>{classify::kDocument, classify::kPane, classify::kPane, classify::kWindow}
+      : std::array<long, 4>{classify::kEdit, classify::kText, classify::kGroup, classify::kGroup};
+    const std::array<std::wstring_view, 4> classes = {L"_WwG", L"_WwB", L"_WwF", L"OpusApp"};
+    HWND childHandle = nullptr;
     for (std::size_t i = 0; i < types.size(); ++i) {
       int pid = 0;
       CONTROLTYPEID type = 0;
@@ -164,10 +170,23 @@ class Traversal {
       Variant password;
       if (!current || FAILED(current->get_CurrentProcessId(&pid)) || static_cast<std::uint32_t>(pid) != pid_ ||
           FAILED(current->get_CurrentControlType(&type)) || type != types[i] ||
-          FAILED(current->get_CurrentAutomationId(id.Put())) || id.View() != (i == 3 ? L"workbench.parts.editor" : L"") ||
+          FAILED(current->get_CurrentAutomationId(id.Put())) || id.View() != (!word && i == 3 ? L"workbench.parts.editor" : L"") ||
           policy::IsSensitiveAutomationId(policy_, rule_, id.View()) ||
           FAILED(current->GetCurrentPropertyValueEx(UIA_IsPasswordPropertyId, TRUE, password.Put())) ||
           password.Get().vt != VT_BOOL || password.Get().boolVal != VARIANT_FALSE) return false;
+      if (word) {
+        Bstr className;
+        UIA_HWND handle = nullptr;
+        wchar_t nativeClass[256]{};
+        if (FAILED(current->get_CurrentClassName(className.Put())) || className.View() != classes[i] ||
+            FAILED(current->get_CurrentNativeWindowHandle(&handle)) || !handle) return false;
+        const HWND hwnd = reinterpret_cast<HWND>(handle);
+        DWORD owner = 0;
+        GetWindowThreadProcessId(hwnd, &owner);
+        if (owner != pid_ || !GetClassNameW(hwnd, nativeClass, 256) || std::wstring_view(nativeClass) != classes[i] ||
+            (childHandle && GetParent(childHandle) != hwnd) || (i == 3 && hwnd != rootHwnd_)) return false;
+        childHandle = hwnd;
+      }
       if (i + 1 < types.size()) {
         ComPtr<IUIAutomationElement> parent;
         if (FAILED(walker_->GetParentElement(current.Get(), &parent))) return false;
@@ -295,6 +314,12 @@ class Traversal {
     if (FAILED(element->get_CachedAutomationId(automationId.Put()))) node.missing.push_back("automationId");
     const std::wstring fullId(automationId.View());
     node.automationId = text::ToUtf8(text::TruncateUtf16(fullId, kMaxAutomationIdChars));
+    if (policy::HasWordDocumentScope(rule_)) {
+      Bstr className;
+      if (SUCCEEDED(element->get_CachedClassName(className.Put())) &&
+          (className.View() == L"_WwG" || className.View() == L"_WwB" || className.View() == L"_WwF" || className.View() == L"OpusApp"))
+        node.className = text::ToUtf8(className.View());
+    }
 
     const auto password = CachedBool(element, UIA_IsPasswordPropertyId, true);
     node.password = password;
@@ -339,7 +364,8 @@ class Traversal {
     facts.hasKeyboardFocus = node.focused;
     facts.textPatternAvailable = CachedBool(element, UIA_IsTextPatternAvailablePropertyId, false).value_or(false);
     facts.valuePatternAvailable = CachedBool(element, UIA_IsValuePatternAvailablePropertyId, false).value_or(false);
-    facts.scopedDocument = protocol::IsVsCodeEditorBody(node, response.nodes, rule_);
+    const bool wordDocument = protocol::IsWordDocument(node, response.nodes, rule_);
+    facts.scopedDocument = wordDocument || protocol::IsVsCodeEditorBody(node, response.nodes, rule_);
     // A long AutomationId that had to be truncated cannot match an exact selector.
     if (fullId.size() > kMaxAutomationIdChars) facts.automationId = {};
     const classify::NodeDecision decision = classify::Classify(facts, policy_, rule_);
@@ -348,11 +374,11 @@ class Traversal {
       node.redaction = classify::RedactionCode(decision.redaction);
       ++response.stats.redacted;
     }
-    const bool liveDocument = !facts.scopedDocument || LiveScopedDocumentAuthorized(element);
+    const bool liveDocument = !facts.scopedDocument || LiveScopedDocumentAuthorized(element, wordDocument);
     if (decision.readName && !decision.readSearchValue && liveDocument) node.name = ReadName(element, node);
     if (decision.readDocumentText && !Expired() && liveDocument) ReadDocument(element, node);
     if (decision.readDocumentText && facts.scopedDocument) {
-      if (!liveDocument || !LiveScopedDocumentAuthorized(element)) { node.name.reset(); node.text.reset(); }
+      if (!liveDocument || !LiveScopedDocumentAuthorized(element, wordDocument)) { node.name.reset(); node.text.reset(); }
       protocol::FinalizeScopedDocument(node);
       if (!node.redaction.empty()) ++response.stats.redacted;
     }
@@ -383,6 +409,7 @@ class Traversal {
   ComPtr<IUIAutomationTreeWalker> walker_;
   std::size_t textUsed_ = 0;
   std::vector<std::string> truncation_;
+  HWND rootHwnd_ = nullptr;
 };
 
 protocol::WorkerResponse Finish(protocol::WorkerResponse response, const char* status, const char* reason,

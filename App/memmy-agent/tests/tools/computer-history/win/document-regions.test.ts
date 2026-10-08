@@ -26,7 +26,7 @@ describe("application document defaults", () => {
     expect(policy.applications[0]?.documentRegions).toEqual([scope]);
     const word = { ...binding, executable: "C:\\Office\\WINWORD.EXE" };
     expect(compileWindowsPolicy([], [word], { defaultApplicationBehavior: "observe" }).applications[0]?.documentRegions)
-      .toEqual([{ controlType: "Edit", automationId: "Body" }]);
+      .toEqual([{ controlType: "Edit", automationId: "Body" }, { controlType: "Document", automationId: "", scope: "word.document" }]);
     expect(() => compileWindowsPolicy([], [binding])).toThrow();
     expect(() => compileWindowsPolicy([], [binding], { defaultApplicationBehavior: "observe", deny: { executables: [executable] } })).toThrow();
     expect(compileWindowsPolicy([{ executable, documentRegions: [] }], [binding]).applications[0]?.documentRegions).toEqual([]);
@@ -49,10 +49,62 @@ describe("application document defaults", () => {
   });
 });
 
+describe("Word document scope", () => {
+  const wordBinding = { ...binding, executable: "C:\\Office\\WINWORD.EXE" };
+  const wordPolicy = compileWindowsPolicy([{ executable: wordBinding.executable }], [wordBinding]);
+  const nodes = (): NativeNode[] => ([
+    { ...root, className: "OpusApp", name: undefined },
+    { ...root, key: "0000000000000002", runtimeId: "2", parentKey: root.key, depth: 1, controlType: "Pane", className: "_WwF", name: undefined },
+    { ...root, key: "0000000000000003", runtimeId: "3", parentKey: "0000000000000002", depth: 2, controlType: "Pane", className: "_WwB", name: undefined },
+    { ...root, key: "0000000000000004", runtimeId: "4", parentKey: "0000000000000003", depth: 3, controlType: "Document", className: "_WwG",
+      name: "synthetic.rtf", text: "SYNTHETIC-WORD-BODY", visibleText: "SYNTHETIC-WORD-BODY", documentStatus: "available" },
+  ] as NativeNode[]).map((node) => ({ ...node, automationId: "" }));
+  const event = (items = nodes()) => parseNativeEvent({ ...full(items), context: wordBinding }) as NativeSnapshotEvent;
+  const normalizeWord = (items = nodes()) => new SnapshotNormalizer().normalize(event(items), wordPolicy, "r");
+  it("permits only a Word document rooted in its exact window class chain", () => {
+    expect(JSON.stringify(normalizeWord())).toContain("SYNTHETIC-WORD-BODY");
+    expect(normalizeWord()?.accessibility?.nodes.at(-1)?.documentContext).toBeUndefined();
+    expect(parseWindowsSettings({ version: 1, applications: [{ executable: wordBinding.executable,
+      documentRegions: [{ controlType: "Document", automationId: "", scope: "word.document" }] }] }).applications[0]?.documentRegions).toHaveLength(1);
+    expect(() => parseNativePolicy({ ...wordPolicy, applications: [{ ...wordPolicy.applications[0], executable }] })).toThrow();
+  });
+  it.each([
+    (items: NativeNode[]) => { items[0]!.className = "#32770"; },
+    (items: NativeNode[]) => { items[1]!.className = "searchPane"; },
+    (items: NativeNode[]) => { delete items[2]!.className; },
+    (items: NativeNode[]) => { items[3]!.className = "RichEdit"; },
+    (items: NativeNode[]) => { items[2]!.controlType = "Group"; },
+    (items: NativeNode[]) => { items[1]!.password = null; },
+    (items: NativeNode[]) => { items[3]!.password = true; },
+    (items: NativeNode[]) => { items[2]!.missing = ["automationId"]; },
+    (items: NativeNode[]) => { items[3]!.automationId = "search"; },
+    (items: NativeNode[]) => { delete items[3]!.documentStatus; },
+    (items: NativeNode[]) => { items[3]!.value = "private input"; },
+  ])("rejects invalid metadata without falling back to a generic empty Document", (mutate) => {
+    const items = nodes(); mutate(items); expect(() => normalizeWord(items)).toThrow("snapshot_invalid");
+  });
+  it("rechecks changed window classes in a delta and rejects descendants of an authorized document", () => {
+    const normalizer = new SnapshotNormalizer(); normalizer.normalize(event(), wordPolicy, "r");
+    const changed = { ...nodes()[1]!, className: "dialog" };
+    const delta = parseNativeEvent({ ...envelope(2), kind: "snapshot", context: wordBinding, trigger: { kinds: ["sample"], count: 1 },
+      snapshot: { status: "ok", reason: null, mode: "delta", added: [changed], removed: [changed.key], unchangedCount: 3,
+        focusKey: null, truncated: false, truncation: [], stats: stats(4), elapsedMs: 3 } }) as NativeSnapshotEvent;
+    expect(() => normalizer.normalize(delta, wordPolicy, "r")).toThrow("snapshot_invalid");
+    const items = nodes();
+    items.push({ ...root, controlType: "Text", key: "0000000000000005", parentKey: items[3]!.key, depth: 4, name: "private input echo" });
+    expect(() => normalizeWord(items)).toThrow("snapshot_invalid");
+  });
+});
+
 describe("independent TS document privacy boundary", () => {
   it("accepts the bounded editor and preserves availability evidence", () => {
     expect(JSON.stringify(normalize())).toContain("SYNTHETIC-DOCUMENT-CONTENT");
     expect(normalize()?.accessibility?.nodes.at(-1)?.documentStatus).toBe("available");
+    expect(normalize()?.accessibility?.nodes.at(-1)?.documentContext).toBe("vscode.editor");
+  });
+  it("does not accept native assertions of document context authority", () => {
+    const nodes = tree();
+    expect(() => snapshot(nodes.map((node) => ({ ...node, documentContext: "vscode.editor" })))).toThrow();
   });
   it.each([
     (nodes: NativeNode[]) => { nodes[1]!.automationId = "workbench.parts.auxiliarybar"; },
@@ -88,6 +140,7 @@ describe("independent TS document privacy boundary", () => {
     const nodes = tree(); const body = nodes[4]!;
     delete body.name; delete body.text; body.redaction = "edit_control"; body.documentStatus = "label_only";
     expect(normalize(nodes)?.accessibility?.nodes.at(-1)).toMatchObject({ documentStatus: "label_only", redaction: "edit_control" });
+    expect(normalize(nodes)?.accessibility?.nodes.at(-1)?.documentContext).toBeUndefined();
     const normalizer = new SnapshotNormalizer(); normalizer.normalize(snapshot(), policy, "r");
     const changed = tree()[1]!; changed.automationId = "workbench.parts.panel";
     const delta = parseNativeEvent({ ...envelope(2), kind: "snapshot", context: binding, trigger: { kinds: ["sample"], count: 1 },

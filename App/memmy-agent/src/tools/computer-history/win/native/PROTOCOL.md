@@ -126,6 +126,7 @@ The default stream omits these fields. UIA triggers alone never produce action o
 | `password` | always | `true`/`false`, or `null` when the provider does not report `IsPassword` |
 | `redaction` | when masked | `sensitive_id`, `password`, `edit_control`, `unknown_password`, `unknown_password_structural` |
 | `documentStatus` | scoped editor read attempted | `available`, `label_only`, or `read_failed`; participates in the node key when present |
+| `className` | Word scope metadata when available | Bounded UIA class name (256 UTF-16 units); producer emits only `_WwG`, `_WwB`, `_WwF`, `OpusApp`; participates in node key |
 | `name` | when permitted | UIA `Name` |
 | `text` | authorized document region | `TextPattern.DocumentRange` text |
 | `visibleText` | authorized document region | Provider-reported visible ranges, `\n`-joined |
@@ -207,24 +208,41 @@ applied. `observe` refuses to start without a valid policy, and each query re-re
 | `applications[].processStart` | no | decimal string; when present it must equal the process creation FILETIME |
 | `applications[].hwnd` | no | decimal string; when present only this top-level window matches |
 | `applications[].searchFields` | no | `[{controlType:"Edit", automationId}]`; value read only while that exact field has focus |
-| `applications[].documentRegions` | no | Exact nonempty-ID selectors, or the bounded VS Code selector below; TextPattern body reads only |
+| `applications[].documentRegions` | no | Exact nonempty-ID selectors, or the bounded VS Code / Word selectors below; TextPattern body reads only |
 | `applications[].sensitiveAutomationIds` | no | blocks the element and its subtree (case-insensitive) |
 | `sensitiveAutomationIds` | no | same, for all applications |
 | `deny.executables`, `deny.pids` | no | refuse even if an application rule matches |
 | `limits` | no | `maxDepth` 1–64 (24), `maxNodes` 1–5000 (400), `maxVisited` ≥ maxNodes, ≤ 20000 (2000), `maxTextChars` 1–200000 (12000), `maxNodeTextChars` ≤ maxTextChars, ≤ 20000 (2048), `queryBudgetMs` 50–10000 (650), `workerTimeoutMs` 200–30000 and > queryBudgetMs (1500) |
 
 Ordinary selectors match control type plus exact **nonempty** AutomationId. Names never grant
-permission. The only empty-ID exception is `{controlType:"Edit",automationId:"",scope:"vscode.editor"}`
+permission. One empty-ID exception is `{controlType:"Edit",automationId:"",scope:"vscode.editor"}`
 in documentRegions for a bound `Code.exe`. It requires the exact metadata chain
 `Edit("") <- Text("") <- Group("") <- Group("workbench.parts.editor")`, with successfully read IDs,
 password=false and unredacted ancestors. Native code checks live type/ID/password/PID/sensitive
 IDs before and after reading. Worker and TS validators reconstruct the scope independently;
 a changed ancestor invalidates the body permission, including in deltas.
 
-With this scope, generic workbench Names are not collected: search terms can be echoed into
+With the VS Code scope, generic workbench Names are not collected: search terms can be echoed into
 sibling status/live-region Text. Only authorized body or explicitly selected search fields may
-carry content. Normal ancestor traversal remains metadata-only. The host supplies Word
-`Edit + Body` and VS Code scoped defaults only after app consent/binding, unless documentRegions
+carry content. Normal ancestor traversal remains metadata-only.
+
+The other exception is `{controlType:"Document",automationId:"",scope:"word.document"}` for a
+bound `WINWORD.EXE`. It requires `Document(_WwG) <- Pane(_WwB) <- Pane(_WwF) <- Window(OpusApp)`
+at depths 3, 2, 1, 0, with readable empty IDs, password=false, unredacted ancestors, and root
+parent=null. Native before/after checks additionally require same-PID HWNDs, matching real
+window classes, exact Win32 parent links and the original root HWND. Worker and TS validators
+independently reconstruct the class/type/ancestor evidence; a native boolean is not authority.
+Both scopes use documentStatus and suppress descendants after a scoped read attempt, including
+read failure. Word draft and print layouts can use the outer Document without a generic empty-ID
+wildcard. Complete text and provider-visible text remain distinct.
+
+The normalized JSONL adapter may add `documentContext: "vscode.editor"` only after independently
+validating an available VS Code body. This is not an accepted native protocol field. The shared
+summary may use its text under an explicit visibility-unconfirmed document-context label;
+it must not convert that body into provider-visible text or evidence of user actions.
+
+The host supplies Word `Edit + Body` plus `word.document`, and the VS Code scoped default,
+only after app consent/binding, unless documentRegions
 is explicitly supplied (including an empty array).
 
 These are additive v1 fields shipped together in the helper and adapter. Older strict clients
@@ -249,7 +267,7 @@ precedence over all matching application rules. Policies without the new scope f
 | Content events | `kind` = trigger name, `degraded` for failures | `kind: "snapshot"` with `status` + `reason`; trigger in `trigger.kinds` |
 | Unauthorized targets | silently skipped | `blocked` event with `context: null`, repeats suppressed |
 | Browser | URL/private-state logic with a test `allowUnknownPrivate` switch | all known browsers `browser_unsupported`; no URL, no switch |
-| Office/VS Code fixture selectors | name/AutomationId fixture lists per app | Word Body default and bounded VS Code editor scope; generic nonempty-ID selectors remain available |
+| Office/VS Code fixture selectors | name/AutomationId fixture lists per app | Word Body + bounded document scope and bounded VS Code editor scope; generic nonempty-ID selectors remain available |
 | Credential regex scrubbing | yes (`password=…` → `[REDACTED]`) | not implemented natively; left to the consumer's redaction |
 | Segment manifest | `.segments.json` sidecar | no sidecar; segment names are deterministic, each starts with `segment.started` |
 | Mouse trigger detail | coordinates and button recorded | no coordinates, no key codes |

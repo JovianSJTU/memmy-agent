@@ -116,7 +116,7 @@ bool ContextFromJson(const Json& json, ContextRecord& out) {
 bool NodeFromJson(const Json& json, NodeRecord& node) {
   if (!OnlyKeys(json, {"runtimeId", "controlType", "automationId", "depth", "parent", "focused",
                        "providerOffscreen", "password", "redaction", "name", "text", "visibleText", "value",
-                       "bounds", "missing", "documentStatus"})) {
+                       "bounds", "missing", "documentStatus", "className"})) {
     return false;
   }
   std::string controlType;
@@ -129,6 +129,11 @@ bool NodeFromJson(const Json& json, NodeRecord& node) {
   if (!type) return false;
   node.controlType = *type;
   node.depth = static_cast<int>(depth);
+  if (json.contains("className")) {
+    std::string value;
+    if (!GetString(json, "className", 256, value)) return false;
+    node.className = std::move(value);
+  }
   const auto parent = json.find("parent");
   if (parent == json.end() || !parent->is_number_integer()) return false;
   const auto parentIndex = parent->get<std::int64_t>();
@@ -232,6 +237,22 @@ void FinalizeScopedDocument(NodeRecord& node) {
   }
 }
 
+bool IsWordDocument(const NodeRecord& node, const std::vector<NodeRecord>& preceding, const policy::AppRule& rule) {
+  if (!policy::HasWordDocumentScope(rule)) return false;
+  const std::array<long, 4> types = {classify::kDocument, classify::kPane, classify::kPane, classify::kWindow};
+  const std::array<std::string_view, 4> classes = {"_WwG", "_WwB", "_WwF", "OpusApp"};
+  const NodeRecord* current = &node;
+  for (int i = 0; i < 4; ++i) {
+    if (current->controlType != types[i] || current->className != classes[i] || !current->automationId.empty() ||
+        current->depth != 3 - i || current->password != false || (i > 0 && !current->redaction.empty()) ||
+        std::find(current->missing.begin(), current->missing.end(), "automationId") != current->missing.end()) return false;
+    if (i == 3) return current->parent == -1;
+    if (current->parent < 0 || static_cast<std::size_t>(current->parent) >= preceding.size()) return false;
+    current = &preceding[static_cast<std::size_t>(current->parent)];
+  }
+  return false;
+}
+
 std::string FormatUtcTimestamp(std::uint64_t filetimeTicks) {
   // FILETIME epoch 1601-01-01 is 134774 days before 1970-01-01.
   const std::uint64_t totalMs = filetimeTicks / 10000;
@@ -266,6 +287,7 @@ std::string NodeKey(const NodeRecord& node, std::string_view parentKey) {
   Fnv(hash, node.runtimeId);
   Fnv(hash, std::to_string(node.controlType));
   Fnv(hash, node.automationId);
+  if (node.className) Fnv(hash, *node.className);
   Fnv(hash, node.redaction);
   if (!node.documentStatus.empty()) Fnv(hash, node.documentStatus);
   Fnv(hash, node.password ? (*node.password ? "1" : "0") : "-");
@@ -336,6 +358,7 @@ Json NodeToJson(const NodeRecord& node, const std::string* key, const std::strin
   json["password"] = node.password ? Json(*node.password) : Json(nullptr);
   if (!node.redaction.empty()) json["redaction"] = node.redaction;
   if (!node.documentStatus.empty()) json["documentStatus"] = node.documentStatus;
+  if (node.className) json["className"] = *node.className;
   if (node.name) json["name"] = *node.name;
   if (node.text) json["text"] = *node.text;
   if (node.visibleText) json["visibleText"] = *node.visibleText;
@@ -485,7 +508,7 @@ bool WorkerResponseFromJson(const Json& json, const policy::Policy& policy, cons
       error = "worker_privacy_violation";
       return false;
     }
-    const bool scoped = IsVsCodeEditorBody(node, out.nodes, rule);
+    const bool scoped = IsVsCodeEditorBody(node, out.nodes, rule) || IsWordDocument(node, out.nodes, rule);
     if ((!node.documentStatus.empty() && !scoped) || (scoped && hasContent && node.documentStatus != "available")) {
       error = "worker_privacy_violation";
       return false;
@@ -506,7 +529,7 @@ bool WorkerResponseFromJson(const Json& json, const policy::Policy& policy, cons
     }
     // Evaluated without pattern availability: the most restrictive view that still lets an
     // unreadable authorized Document fall back to its independently checked children.
-    blocksChildren.push_back(!Recheck(node, policy, rule, false, scoped).traverseChildren);
+    blocksChildren.push_back(!Recheck(node, policy, rule, false, scoped).traverseChildren || (scoped && !node.documentStatus.empty()));
     for (const auto* field : {&node.name, &node.text, &node.visibleText, &node.value}) {
       if (!*field) continue;
       const auto units = text::Utf16Length(**field).value_or(SIZE_MAX);

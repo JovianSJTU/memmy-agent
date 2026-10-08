@@ -51,7 +51,8 @@ node dist/tools/computer-history/core/summarize-history.js --file "D:\history-va
 ### Word 与 VS Code 正文适配
 
 应用获准并绑定实际进程后，未自定义正文规则的 `WINWORD.EXE` 默认使用
-`Edit + Body`；`Code.exe` 默认使用 `{controlType:"Edit", automationId:"", scope:"vscode.editor"}`。
+`Edit + Body` 与 `{controlType:"Document", automationId:"", scope:"word.document"}`；
+`Code.exe` 默认使用 `{controlType:"Edit", automationId:"", scope:"vscode.editor"}`。
 显式 `documentRegions: []` 关闭默认正文规则，已有自定义规则保留。应用 deny、浏览器拒绝、
 密码和敏感子树检查不变。该适配不向未授权应用授予权限。
 
@@ -61,20 +62,34 @@ worker 校验与 TS 完整树复核各自重新判断范围。不存在通用空
 启用此范围时，未明确授权的 workbench 节点不读 Name，防止查找词经旁边的状态提示泄露；
 Chat、终端、搜索和快速打开不能依靠普通 Text 标签绕过输入框过滤。
 
-范围内正文另有 `documentStatus: available | label_only | read_failed`。
+Word 外层正文仅允许固定类型/窗口类链
+`Document(_WwG) ← Pane(_WwB) ← Pane(_WwF) ← Window(OpusApp)`，深度必须依次为 3、2、1、0，
+各层 ID 明确为空且密码状态明确为 false。读取前后还检查真实 HWND、窗口类、所属进程、
+原生父子关系和最外层采集窗口；worker 与 TS 根据完整树独立复核类型/类名/层级。
+匹配并尝试读取后不再遍历正文子节点，避免重复或借子节点泄露内容。该规则适配本机草稿和页面视图，
+不把任意空 ID Document、查找框或对话框当成正文。
+
+上述两种范围内正文另有 `documentStatus: available | label_only | read_failed`。
 Name 与 Text 去掉首尾 ASCII 空白后相同且非空时，保守视为提示，清除所有内容；读取失败也清除内容。
 该判断不依赖提示语言，但正文恰好等于文件名时也会被保守排除。状态是采集证据，不保证用户阅读、
 正文完整或像素可见。VS Code `auto` 不保证自动启用辅助功能；本机显式 `on` 可读，`off` 和本轮
 未启用的 `auto` 仅得到不可访问提示。采集器不修改编辑器设置。
 
 本机 VS Code 的系统 `GetVisibleRanges` 实测仅返回光标所在行，尽管 DocumentRange 返回四行正文，
-且屏幕能显示四行。独立探针与包内采集输出一致。现有摘要优先使用 `visibleText`，所以可能只接收
-当前行；移动光标后对应行可进入摘要与检索。当前适配不保证整屏或全文进入摘要，不以完整正文
-替代可见范围。后续需要单独验证编辑器可见性语义，不能将该限制误述为没有正文接口。
+且屏幕能显示四行。独立探针与包内采集输出一致。归一化器在独立验证编辑区且正文可用后添加
+`documentContext: vscode.editor`；原生流不能自行声明这个字段。摘要将该正文另列为
+`document context (visibility unconfirmed):`，允许描述文档主题，但不能据此声称用户看过、写过或
+操作过整篇文档，也不能推断其意图或偏好。`visibleText` 仍单独保存和使用，不用正文填补缺失的
+可见范围。文档上下文独立去重、凭据脱敏、每项最多 2,000 字符，并参与原有 12,000 字符总预算；
+不会保证整屏或全文进入摘要。已有不含该字段的录制保持原有摘要取材方式。
+这些是证据格式和模型提示约束，不是对模型输出准确性的保证。本轮真实模型曾把上下文误称为可见文字、
+把正文当成名称；加强来源规则后仍有含糊措辞，具体失败样本与复验结论见 VALIDATION.md。
+2026-10-08 进一步检查 DocumentRange 与逐行 `GetBoundingRectangles`，也只有光标行返回矩形；
+其余合成正文行的矩形为空。因此本机不能靠这些几何信息可靠补全可见范围。
 
-已验证 Word 两页 RTF 的页面视图、切换至第二页、查找内容排除。**草稿视图尚不支持**：
-其空 ID 外层 Document 能通过 UIA 返回正文，但当前 `Body` 规则不匹配。
-后续需验证独立的 Word 文档范围授权，不能放开所有空 ID Document。Office 其他版本、
+已验证 Word 两页 RTF 的草稿视图、页面视图、切换至第二页、查找内容排除。
+页面视图的完整正文与 provider 可见文本分开保存，翻页后可见文本随之更新。
+替换对话框中的预填查找内容未泄露，但非空替换值和执行替换尚未完成真机验收。Office 其他版本、
 受保护文档、其他视图、VS Code 分屏/插件界面均不由这些样本保证；实测边界见 VALIDATION.md。
 
 真实应用正文缺失的定位入口见 [四层采集诊断](native/tests/diagnostics/README.md)：分别保存系统 UIA、生产 C++ 输出、实际 TypeScript 归一化结果和最终 JSONL，并核验前台及进程身份。先运行合成阳性/阴性对照，再测真实应用的合成文档；原始 UIA 诊断成功不等于产品采集成功。它只在测试构建中提供，不进入安装包，实测结论见 VALIDATION.md 的 2026-10-07 四层诊断记录。

@@ -8,14 +8,15 @@ const executable = z.string().min(1).max(32768).refine((value) => path.win32.isA
   && !value.includes("\0") && !value.startsWith("\\\\.\\") && !value.startsWith("\\\\?\\"));
 const selector = z.object({ controlType: z.enum(["Edit", "Document"]), automationId: z.string().min(1).max(256) }).strict();
 export const documentSelector = z.union([selector,
-  z.object({ controlType: z.literal("Edit"), automationId: z.literal(""), scope: z.literal("vscode.editor") }).strict()]);
+  z.object({ controlType: z.literal("Edit"), automationId: z.literal(""), scope: z.literal("vscode.editor") }).strict(),
+  z.object({ controlType: z.literal("Document"), automationId: z.literal(""), scope: z.literal("word.document") }).strict()]);
 const app = z.object({ pid: z.number().int().min(1).max(0xffffffff), executable,
   processStart: decimal.optional(), hwnd: decimal.optional(),
   searchFields: z.array(selector.refine((value) => value.controlType === "Edit")).max(32).optional(),
   documentRegions: z.array(documentSelector).max(32).optional(),
   sensitiveAutomationIds: z.array(z.string().min(1).max(256)).max(128).optional(),
-}).strict().refine((value) => !value.documentRegions?.some((item) => "scope" in item)
-  || path.win32.basename(value.executable).toLowerCase() === "code.exe");
+}).strict().refine((value) => value.documentRegions?.every((item) => !("scope" in item)
+  || path.win32.basename(value.executable).toLowerCase() === (item.scope === "vscode.editor" ? "code.exe" : "winword.exe")) ?? true);
 const limits = z.object({
   maxDepth: z.number().int().min(1).max(64).default(24),
   maxNodes: z.number().int().min(1).max(5000).default(400),
@@ -82,7 +83,8 @@ export type WindowsApplicationRule = Omit<NativeAppRule, "pid" | "processStart" 
 // Applied only after app consent/discovery binding. An explicit [] disables defaults.
 export function defaultDocumentRegions(executable: string): NativeAppRule["documentRegions"] {
   switch (path.win32.basename(executable).toLowerCase()) {
-    case "winword.exe": return [{ controlType: "Edit", automationId: "Body" }];
+    case "winword.exe": return [{ controlType: "Edit", automationId: "Body" },
+      { controlType: "Document", automationId: "", scope: "word.document" }];
     case "code.exe": return [{ controlType: "Edit", automationId: "", scope: "vscode.editor" }];
     default: return undefined;
   }

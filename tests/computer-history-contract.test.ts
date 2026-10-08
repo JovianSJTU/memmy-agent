@@ -36,6 +36,9 @@ describe("snapshot contract with the desktop client", () => {
     const settings = windowsSettings.parseWindowsSettings({ version: 1, applications: [{ executable: "C:\\Apps\\Code.exe",
       documentRegions: [{ controlType: "Edit", automationId: "", scope: "vscode.editor" }] }] });
     expect(WindowsHistorySettingsSchema.parse(settings)).toEqual(settings);
+    const word = windowsSettings.parseWindowsSettings({ version: 1, applications: [{ executable: "C:\\Office\\WINWORD.EXE",
+      documentRegions: [{ controlType: "Document", automationId: "", scope: "word.document" }] }] });
+    expect(WindowsHistorySettingsSchema.parse(word)).toEqual(word);
   });
   it("validates real Windows consent, profiles and readiness against the desktop contract", async () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), "memmy-windows-contract-")); roots.push(root);

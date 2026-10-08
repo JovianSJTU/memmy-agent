@@ -15,7 +15,8 @@ export function historyPermissionsReady(status?: ComputerHistoryPermissions): bo
 }
 const WindowsSelectorSchema = z.object({ controlType: z.enum(["Edit", "Document"]), automationId: z.string() }).strict();
 const WindowsDocumentSelectorSchema = z.union([WindowsSelectorSchema,
-  z.object({ controlType: z.literal("Edit"), automationId: z.literal(""), scope: z.literal("vscode.editor") }).strict()]);
+  z.object({ controlType: z.literal("Edit"), automationId: z.literal(""), scope: z.literal("vscode.editor") }).strict(),
+  z.object({ controlType: z.literal("Document"), automationId: z.literal(""), scope: z.literal("word.document") }).strict()]);
 const WindowsAppRuleSchema = z.object({
   executable: z.string(), searchFields: z.array(WindowsSelectorSchema).optional(), documentRegions: z.array(WindowsDocumentSelectorSchema).optional(),
   sensitiveAutomationIds: z.array(z.string()).optional(),

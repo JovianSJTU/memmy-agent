@@ -545,3 +545,153 @@ Word / VS Code 合成窗口均已关闭，最终没有 recorder、worker、fixtu
 2. 依据已确认的 Word 草稿视图外层 Document 正文，设计另一个受限范围；补齐完整替换操作、弹窗及其他 Office 版本。
 3. 对 Chat/终端补真实合成输入阴性验证，完善正文不可用状态的用户提示，再执行新适配的 Desktop 界面与真实模型验收。
    分屏、插件、大文档、IME、多屏/DPI、锁屏和长稳仍需独立覆盖；Mac 本轮没有重跑原生回归。
+
+## 2026-10-08：Word 草稿接入与 VS Code 文档上下文摘要
+
+此节更新上一阶段的两项限制；此前报告保留为历史证据。本轮没有扩展浏览器、WPS、Chat、终端或通用输入框权限。
+证据根目录为 `D:/memmy-agent/App/shell/desktop/release/document-compatibility-20261008/`，不提交合成录制、构建目录和安装器。
+仍使用 Word 16.0.14334.20918、VS Code 1.139.1、禁用扩展的隔离 Code profile 与两份合成文档。
+
+### 实现与权限边界
+
+- Word 默认增加 `word.document`，仅匹配 `Document(_WwG) ← Pane(_WwB) ← Pane(_WwF) ← Window(OpusApp)`，
+  精确深度 3→0、空且可读的 AutomationId、明确非密码状态。C++ 在读取前后核对 PID、真实 HWND/窗口类、
+  Win32 父子关系及原始根窗口；worker 和 TS 通过完整树独立复核。没有使用文件名或通用空 ID 授权。
+- 原来的 `Edit + Body` 规则保留；自定义规则及显式空数组优先。尝试范围正文读取后不遍历其子节点；
+  内容不可用或仅为辅助提示时清空所有内容。`className` 是有界元数据并参与节点键，祖先变化会使 delta 失去正文权限。
+- 用户明确授权由开发者判断并放宽摘要取材后，VS Code 可用正文由 TS 添加 `documentContext: vscode.editor`。
+  这个字段不接受原生进程自行声明。完整正文以 `document context (visibility unconfirmed):` 单独进入摘要，
+  可见文本仍单独处理；不会把完整正文填入 `on screen:`。模型指令禁止据此推断用户看过、写过、操作过全文或推断其意图/偏好。
+- 上下文独立去重、凭据脱敏，每项最多 2,000 字符，并参与原有 12,000 字符总预算；新增的摘要字段不触发额外采集。
+  旧录制没有该字段时保持原有行为。单元测试同时覆盖后续光标行进入可见证据，避免上下文去重吞掉可见性变化。
+
+### 真实应用与诊断证据
+
+| 场景 | 实际结论 |
+|---|---|
+| Word 草稿旧策略对照 | `word-draft-baseline/` 确认 UIA 有正文、生产旧策略排除；不是缺少系统接口。 |
+| Word 草稿新默认 | `word-draft-supported/`：同一空 ID 外层 Document 四层贯通，前台/身份有效、无截断。 |
+| Word 草稿查找 | `word-draft-find/`：正文四层贯通，合成查找值未出现在原生、归一化或 JSONL。 |
+| Word 页面视图、翻页 | `word-print-page1/` 与 `word-print-page2/` 四层贯通；完整正文含两页，但 visibleText 分别只含当前页标记。 |
+| Word 替换对话框 | `word-replace-dialog-retry/` 绑定真实对话框；4 个 Edit 均脱敏且无内容字段，预填查找词未泄露。替换字段为空，未执行替换。 |
+| VS Code 几何信息 | `code-geometry-bounded/` 四层正文贯通；DocumentRange 含四行，但 GetVisibleRanges 与文档矩形只对应当前行，其余三行矩形为空。 |
+
+`source-audit.json` 的 8 项证据断言通过；这是对上述报告的审计，不与自动回归或真实应用场景数相加。
+页面视图首次读到屏幕外正文不能代表它应作为可见内容；此处额外对两个页面的 visibleText 做了正、反向断言。
+VS Code 的几何结果说明本版本不能靠这些接口可靠补全屏幕可见范围，不代表 Windows 没有正文接口，
+也没有足够证据把内部原因完全归结为 VS Code、Chromium 或某一系统层。
+
+测试方式的错误与修正均保留：
+
+- 初次 `code-geometry-baseline/` 的诊断逐行 Move 越过所选文档，读到了相邻状态栏；生产采集不使用这个诊断遍历。
+  已在每次取文本前加入 DocumentRange 起止端点检查，`code-geometry-bounded/` 仅含四行合成正文。
+- 替换对话框在桌面工具中没有独立可选窗口，输入调用重新激活主窗口，把一次合成替换标记送入正文。
+  已立即撤销并确认正文恢复，未将该操作计为通过，也未执行实际替换。对话框已有的查找值可验证排除边界。
+- `word-replace-dialog/` 首次清单缺少必填诊断正文选择器，虽原生输出完整，仍按 harness error 保留；
+  补回原正文名称后重跑，诊断未匹配正文是该对话框的正常负对照，不能当作正文接口不支持的结论。
+
+### 自动回归
+
+统一报告：`regression/computer-history-validation-ZvV7vQ/results.json`。提示词加强前的
+`computer-history-validation-52Qnds` 也为 571/0/8，作为中间阶段报告保留，不重复计数。
+
+| 层级 | 通过 | 失败 | 跳过 |
+|---|---:|---:|---:|
+| Agent 共享 / Windows / Mac 可跨平台运行测试 | 467 | 0 | 6 |
+| 前端 | 87 | 0 | 0 |
+| 契约与安装包静态检查 | 14 | 0 | 1 |
+| 真实生产 EXE 生命周期 | 3 | 0 | 1 |
+| 统一入口合计 | **571** | **0** | **8** |
+
+类型、lint、依赖/Agent/前端构建、core 与 mac 两个摘要 CLI 均通过。8 项跳过分别为 POSIX 子进程语义、
+Windows 缺少文件 symlink 权限、2 项 Swift 原生捕获、Mac helper 可执行权限、Swift 原生 ingest、
+Mac Electron/Swift 包内执行，以及统一入口按测试名称有意排除的 Windows 前台内容用例。
+本轮没有把这些跳过改算通过；真实应用正文另以上表和安装版报告验证。
+
+原生 Release：`native-release.log`，**33 通过 / 0 失败 / 0 跳过**；Debug 最终
+`native-debug-retry.log`，同样 **33 / 0 / 0**。各自 unit 测试内有 49 个断言组，不再与 CTest 总数相加。
+Debug 首轮 `native-debug.log` 为 **29 通过 / 2 失败 / 2 跳过**：snapshot_content 的密码焦点阶段返回
+`not_foreground`，race_policy 预期策略变化却先遇到 `context_changed`，commit_races/commit_pause 未获得前台。
+该轮与统一验证并行；停止并行前台测试后独立重跑通过。没有放宽断言，不能据此宣称已解决所有前台稳定性问题。
+
+首轮定向 Word 单元测试因 fixture 根 AutomationId 沿用旧非空值出现 2 项失败，按实测空 ID 修正；
+首轮统一入口 `computer-history-validation-PFPglC` 又发现新增测试的 controlType 类型过宽，已显式声明为 Text。
+修复后 Word 阶段统一报告 `computer-history-validation-rS7sKZ` 为 564/0/8；后续加入文档上下文，最终为上述 571/0/8。
+新增摘要逻辑及既有 Mac 摘要定向测试 `context-unit.log` 共 89 项通过，包含在最终统一基线中，不另行累加。
+
+### 安装组件与真实模型的首轮发现
+
+首轮包于 11:46 安装成功，版本 1.1.8 / x64 / cn / NotSigned，安装器为 355,267,036 bytes，
+SHA-256 `A47EAF49FA730B3AB5B2E1FC93207044C2CA3C48A2115037EA222C876BBB3493`；
+保留副本 `prompt-final/Memmy-1.1.8-before-prompt-refinement.exe`。它已含新 Word 和文档上下文功能，
+但不含下述真实模型验证后补充的提示词约束，不能当作最终交付包。
+
+首轮 `packaged/preflight.json` 与 `installed/preflight.json` 各 8 通过；三个安装文件哈希匹配。
+预检采用仅含安装目录和 System32 的 PATH，并提供无效 helper 覆盖路径。两个应用
+`installed/{word,code}-four-layer/` 均四层贯通。Word `installed/word-service-retry/` 与
+Code `installed/code-service/` 各 5 通过：实际包内 helper、正文落盘与正常停止、真实摘要请求的合成模型响应、
+生产检索、停止后文件稳定。Code 光标保持第一行，第二行标记进入 document context 而没有进入 on screen。
+首次 `installed/word-service/` 的测试断言仅比较路径大小写，因 `/` 与 `\` 差异误判目标进程；
+原始事件全部为 WINWORD.EXE，改为 `path.win32.normalize` 后重跑。该失败仍有一次合成模型请求，未从报告抹除。
+
+真实模型只使用本机已有 BYOK gpt-5.5 与合成 Code 录制，读取配置但不修改凭据、观察设置或日常 profile：
+
+- `real-model/`：调用安装版摘要及 provider 成功，但质量检查失败。模型把正文误称为文档名称，
+  又把仅存在于 document context 的末句误述为可见文字。传给模型的证据标签正确，因此这是摘要归因错误，
+  不能解释成采集器遗漏、Windows 权限不足或 UIA 全文被正确证明可见。
+- 据此增加明确规则和反例：上下文独有事实必须用“document context contains/describes”归因；
+  不从正文、标题行或标记推断文件名，只有显式 filename 元数据可以支持命名。
+- `real-model-source-retry/`：使用重新编译的源码摘要实现与安装版 provider，**不是最终安装包验收**。
+  新样本明确归因上下文，没有再称末句可见，但“document labeled”和“Document inspection”仍有歧义，
+  质量标为 partial；不能把单样本或提示词约束当成模型绝不误述的保证。
+
+以上各一次 provider 调用；没有统计 SDK 内部 HTTP 重试。采集、摘要传递、模型连通性、模型语义质量应分开判断。
+
+最终代码复核去除了重复的三条提示词语句和对应重复断言，没有改变采集规则或证据格式。
+`prompt-final/prompt-final-tests.log` 的 Windows 文档上下文与 Mac 共享摘要定向回归为 **48 通过 / 0 失败**，
+`prompt-final/prompt-dedup-build.log` 的 Agent 构建通过；这些用例包含在前述统一测试范围内，不另外累加。
+完整打包 `prompt-final/package.log` 通过后，将重新编译的摘要模块更新到同一暂存运行时，并用相同生产配置重跑
+Electron Builder（`prompt-final/prompt-dedup-package.log`）；最终源码/安装模块校验负责证明交付内容一致。
+
+### 最终安装包与安装组件验收
+
+最终包在 12:17 安装成功，证据均在上述目录的 `prompt-final/` 内：
+
+- 安装器：`D:/memmy-agent/App/shell/desktop/release/Memmy-1.1.8-win32-x64-cn-unsigned.exe`。
+  版本 **1.1.8 / x64 / cn / NotSigned**，355,292,758 bytes（约 338.8 MiB）。
+  SHA-256：`86E82190D3CC9C79DCF3F31EB885E456564DB6A58CA101FA1D08162343B85DC3`。
+- 原生 helper：584,192 bytes（570.5 KiB），SHA-256
+  `5E69EB89D8CEEC9B6BF8C5BB2F9C27760DB5EC3B8431337CABED282756732F24`。
+- 安装目录：`C:/Users/zephyr/AppData/Local/Programs/Memmy`。
+  `package-hashes.json` / `installed-hashes.json` 证明 Desktop、ASAR、helper 三项匹配；
+  `installed-source-match.json` 的 6 个关键 JS 模块均与最终源码构建匹配。
+  `final-asar-verification.log` 的正式 ASAR 版本与配置边界检查通过。
+- `packaged/preflight.json` 与 `installed/preflight.json` 分别 **8 通过 / 0 失败**，
+  使用受限 PATH 和故意无效的 helper 覆盖路径，确认优先使用 ASAR 外的包内 helper。
+- `installed/word-four-layer/` 和 `installed/code-four-layer-retry/` 均四层贯通，前台与身份有效、
+  无截断、无隐私阴性标记泄漏。Code 首次 `installed/code-four-layer/` 因 `not_foreground` 条件无效，
+  没有计为通过；桌面工具要求刷新状态后重新激活，确认光标第一行再重跑成功。
+- `installed/word-service/` 与 `installed/code-service/` 分别 **5 通过 / 0 失败**，每个一次合成模型响应。
+  实际安装版默认策略完成采集→JSONL→摘要请求→检索→停止；所有带应用的事件均核对 EXE 和选定合成窗口 HWND。
+  Code 第二行标记只在文档上下文中，未进入第一行 provider 可见证据。
+- `real-model/` 使用最终安装版摘要和 provider，**一次**现有 BYOK gpt-5.5 调用成功；配置哈希未变。
+  Codex 对照证据检查质量为 **partial**：记录部分明确归因 document context，也未声称编辑或读过全文；
+  标题/描述仍沿用正文首行作为文档标签，Memory summary 中也有未明确标注来源的上下文事实。
+  不能宣称已消除名称推断或所有可见性归因问题。
+- `real-model/retrieval/results.json`：安装版生产检索读取隔离复制、由真实模型生成的摘要，1 项通过，
+  不是聊天端到端。全轮实际 provider 调用共 3 次（两次安装版、一次源码摘要复核），未统计内部 HTTP 重试；
+  与合成模型请求分开记录。
+- `installed-audit.json` 汇总组件层证据；`final-cleanup.json` 确认合成应用、采集器和测试宿主均为 0，
+  原有 Memory-only 服务恢复且健康检查 200。`node-abi-query.json` 确认开发 SQLite 回到 Node ABI 137，真实查询通过。
+
+上述层级不合并计数。本轮没有执行新增适配的 Desktop 设置页面操作或聊天端到端，也没有将首轮失败、
+条件无效、模型质量 partial 改算为通过。首轮与中间安装器、诊断日志、录制及摘要均保留在本机忽略目录。
+
+### 后续验证边界
+
+- 本轮真实应用样本覆盖当前 Word/Code 版本和两份合成文档；没有证明所有 Office 版本、编辑器布局或插件都适用。
+- VS Code 仍需补 auto/on/off、分屏、滚动、光标变化和大文档矩阵，区分正文可用、provider 可见范围与实际像素可见范围。
+  若后续增加文件名或编辑器标签，应独立传递有来源的元数据；不要让模型从正文推断名称或操作。
+- Word 完整替换操作、真实 Chat/终端输入阴性检查、正文不可用提示、新增能力的 Desktop UI 与聊天端到端仍待补测。
+- IME、多屏/DPI、锁屏、长期运行以及本轮共享摘要改动后的 Mac 实机回归仍需单独完成。
+  已验证的包内组件调用和受控检索不能替代这些验收。

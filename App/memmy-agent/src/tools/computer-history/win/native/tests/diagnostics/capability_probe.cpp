@@ -79,6 +79,20 @@ bool Contains(const Json& values, const std::string& value) {
   for (const auto& candidate : values) if (candidate == value) return true;
   return false;
 }
+Json Rectangles(IUIAutomationTextRange* range) {
+  memmy::win::SafeArray array;
+  const HRESULT hr = range->GetBoundingRectangles(array.Put());
+  Json result = {{"hr", hr}, {"values", Json::array()}};
+  if (FAILED(hr) || !array.Get() || SafeArrayGetDim(array.Get()) != 1) return result;
+  LONG lower = 0, upper = -1;
+  if (FAILED(SafeArrayGetLBound(array.Get(), 1, &lower)) || FAILED(SafeArrayGetUBound(array.Get(), 1, &upper))) return result;
+  for (LONG i = lower; i <= upper && i - lower < 256; ++i) {
+    double value = 0;
+    if (FAILED(SafeArrayGetElement(array.Get(), &i, &value))) break;
+    result["values"].push_back(value);
+  }
+  return result;
+}
 Json Probe(const Json& request, const memmy::protocol::ContextRecord& context,
            const memmy::policy::Policy& policy, const memmy::policy::AppRule& rule) {
   const auto started = Clock::now();
@@ -124,7 +138,10 @@ Json Probe(const Json& request, const memmy::protocol::ContextRecord& context,
     metadata.controlType = type; metadata.automationId = memmy::text::ToUtf8(id.View());
     metadata.password = password; metadata.parent = frame.parent; metadata.depth = frame.depth;
     if (FAILED(idHr)) metadata.missing.push_back("automationId");
-    const bool scopedDocument = memmy::protocol::IsVsCodeEditorBody(metadata, preceding, rule);
+    memmy::win::Bstr className;
+    if (SUCCEEDED(element->get_CurrentClassName(className.Put()))) metadata.className = memmy::text::ToUtf8(className.View().substr(0, 256));
+    const bool scopedDocument = memmy::protocol::IsVsCodeEditorBody(metadata, preceding, rule)
+      || memmy::protocol::IsWordDocument(metadata, preceding, rule);
     const auto decision = memmy::classify::Classify({type,
       !password ? memmy::classify::PasswordState::Unknown : *password ? memmy::classify::PasswordState::True : memmy::classify::PasswordState::False,
       id.View(), focused.value_or(false), textPattern.value_or(false), valuePattern.value_or(false), scopedDocument}, policy, rule);
@@ -153,6 +170,13 @@ Json Probe(const Json& request, const memmy::protocol::ContextRecord& context,
       {"valuePattern", valuePattern ? Json(*valuePattern) : Json(nullptr)},
       {"production", {{"redaction", redaction ? Json(redaction) : Json(nullptr)},
         {"readDocumentText", decision.readDocumentText}, {"traverseChildren", decision.traverseChildren}}}};
+    node["className"] = memmy::text::ToUtf8(className.View().substr(0, 256));
+    UIA_HWND nativeHandle = nullptr;
+    if (SUCCEEDED(element->get_CurrentNativeWindowHandle(&nativeHandle))) {
+      wchar_t nativeClass[256]{};
+      if (nativeHandle && GetClassNameW(reinterpret_cast<HWND>(nativeHandle), nativeClass, 256)) node["nativeClassName"] = memmy::text::ToUtf8(nativeClass);
+      node["nativeHandle"] = std::to_string(reinterpret_cast<std::uintptr_t>(nativeHandle));
+    }
     const bool foreign = static_cast<std::uint32_t>(pid) != context.pid;
     const bool sensitive = memmy::policy::IsSensitiveAutomationId(policy, rule, id.View());
     const bool bodyType = type == memmy::classify::kDocument || type == memmy::classify::kEdit;
@@ -178,6 +202,29 @@ Json Probe(const Json& request, const memmy::protocol::ContextRecord& context,
             hr = range->GetText(2048, value.Put());
             node["textHr"] = hr;
             if (SUCCEEDED(hr)) node["text"] = memmy::text::ToUtf8(value.View());
+            if (request.value("rangeGeometry", false) && !expired()) {
+              node["documentRectangles"] = Rectangles(range.Get());
+              ComPtr<IUIAutomationTextRange> line;
+              if (SUCCEEDED(range->Clone(&line)) && line &&
+                  SUCCEEDED(line->MoveEndpointByRange(TextPatternRangeEndpoint_End, line.Get(), TextPatternRangeEndpoint_Start)) &&
+                  SUCCEEDED(line->ExpandToEnclosingUnit(TextUnit_Line))) {
+                node["lineGeometry"] = Json::array();
+                for (int i = 0; i < 8 && !expired() && !foregroundMismatch; ++i) {
+                  int start = -1, end = 1;
+                  // Some providers allow Move() to escape into adjacent controls.
+                  // Never read a range outside this explicitly selected document.
+                  if (FAILED(line->CompareEndpoints(TextPatternRangeEndpoint_Start, range.Get(), TextPatternRangeEndpoint_Start, &start)) ||
+                      FAILED(line->CompareEndpoints(TextPatternRangeEndpoint_End, range.Get(), TextPatternRangeEndpoint_End, &end)) ||
+                      start < 0 || end > 0) break;
+                  memmy::win::Bstr lineText;
+                  Json item = {{"textHr", line->GetText(256, lineText.Put())}, {"rectangles", Rectangles(line.Get())}};
+                  item["text"] = memmy::text::ToUtf8(lineText.View());
+                  node["lineGeometry"].push_back(std::move(item));
+                  int moved = 0;
+                  if (FAILED(line->Move(TextUnit_Line, 1, &moved)) || moved != 1) break;
+                }
+              }
+            }
           }
           // Independently expose provider ranges so complete DocumentRange text is
           // never mistaken for the evidence the production summarizer receives.

@@ -112,7 +112,8 @@ NodeDecision Classify(const NodeFacts& facts, const policy::Policy& policy, cons
   // editor adapter authorizes bodies, not arbitrary workbench names (including Text).
   decision.readName = !policy::HasVsCodeEditorScope(rule);
   if (facts.controlType == kDocument && facts.textPatternAvailable &&
-      policy::MatchesSelector(rule.documentRegions, facts.controlType, facts.automationId)) {
+      (policy::MatchesSelector(rule.documentRegions, facts.controlType, facts.automationId) ||
+       (facts.scopedDocument && policy::HasWordDocumentScope(rule)))) {
     // The authorized body is read as one range; its children would only duplicate it.
     decision.readName = true;
     decision.readDocumentText = true;
