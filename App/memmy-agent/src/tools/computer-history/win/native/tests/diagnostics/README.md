@@ -114,6 +114,20 @@ model request, and intentionally leaves `installedAppAcceptance: false`.
 - `system_probe_inconclusive`: no body proof from the diagnostic. **Not “Windows unsupported”.**
 - `precondition_invalid`, `harness_or_capture_error`, `privacy_failure`: investigate separately.
 
+Run collector cases serially. `capture.json` preserves the native exit code, signal and bounded
+stderr (64 KiB). Exit 4 plus the structured `collector_already_running` diagnostic invalidates
+the test precondition even when foreground and process identity are valid; it is not a UIA
+capability gap. Retain the failed attempt, stop the collector owned by the other test normally,
+and rerun into a fresh directory. Never stop an unrelated user recording to make a test pass.
+
+Marker attribution checks both the bounded DocumentRange and successful GetVisibleRanges
+results of the selected synthetic body; `markerSources` records them separately. A marker near
+the end of a long document can be absent from the probe's bounded DocumentRange while present
+in a visible range and every production layer. Neither result proves actual pixel visibility.
+Keep screenshots, mode/settings observations and production-first ordering distinct from UIA
+evidence. A welcome/login overlay, hidden launch, stale desktop-tool state or tool permission
+failure is a harness issue, not evidence that the product cannot capture the application.
+
 An absent AutomationId is a valid UIA observation; it is not an API error. Individual HRESULTs
 and provider placeholders must be inspected even when TextPattern advertises availability.
 Do not infer completeness from one marker or from `truncated: false`. For a failed first attempt,

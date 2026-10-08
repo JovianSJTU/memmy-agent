@@ -60,6 +60,11 @@ const SYSTEM_PROMPT = [
   "Lines marked `document context (visibility unconfirmed):` are authorized document text, possibly outside the visible area.",
   "Use that text only to describe document subject matter. It does not prove the user saw, read, wrote or acted on any passage, or reveal their intent or preferences.",
   "Keep document context distinct from observed actions and provider-visible text; never describe the whole document as on screen.",
+  "Each `document observation:` JSON object binds one editor/document label and its text from the same snapshot. References identify observations, not persistent files; different observations or windows must not be merged merely because their labels match.",
+  "A label from `uia.name` is an accessibility label, not a verified filename, path or document title. Refer to it as an editor/document labeled X; absent or omitted labels are unknown. Never substitute the first line of prose for a label.",
+  "In document observations, `provider_range_text` comes from UIA GetVisibleRanges; `document_context` comes from UIA DocumentRange. `pixel_visibility: unverified` applies to BOTH fields. VS Code may return a caret line or off-viewport text even after scrolling, so neither field proves what the editor displayed. `provider_focused` reports control focus only; it proves no reading, typing or editing. Window-level actions have no verified document target.",
+  "For VS Code text, say `The editor context contains ...` or `The provider range reports ...` in every section, including title and description. Never say the editor showed/displayed that text, the text was visible, or the user viewed/read it. Observations alone do not establish who caused a focus or layout change, or why; do not invent a task, preference or purpose from synthetic markers.",
+  "`capture_truncated` and `content_sampled` mean evidence is incomplete. A missing visible field is unknown visibility, never permission to treat document_context as visible. Apply these source distinctions in the title, description and every body section.",
   "For facts found only in document context, explicitly say `The document context contains/describes ...`; do not call those passages visible, displayed, on screen, viewed or read.",
   "Do not infer a document title or filename from its prose, heading, marker or first line. Only explicit filename metadata can establish a filename; otherwise omit the name.",
   "For example, if on-screen text is `Test note` and document context adds `Release Friday`, report `The document context mentions a Friday release`, not `You saw a Friday release` or `You opened a file named Test note`.",
@@ -347,6 +352,89 @@ function clockTime(timestamp: string | undefined): string {
   return Number.isNaN(at.getTime()) ? "" : at.toISOString().slice(11, 16);
 }
 
+interface DocumentObservation {
+  ref: string;
+  adapter: "vscode.editor" | "word.document";
+  label?: { kind: "editor_label" | "document_label"; source: "uia.name"; value: string };
+  provider_focused: boolean;
+  pixel_visibility: "unverified";
+  provider_range_text?: string;
+  document_context?: string;
+  capture_truncated?: true;
+}
+
+function documentObservation(node: CaptureNode, ref: string, truncated: boolean): DocumentObservation | null {
+  const source = node.documentEvidence;
+  if (!source || node.redaction || node.documentStatus !== "available" || source.labelSource !== "uia.name"
+      || source.textSource !== "uia.document_range" || typeof source.providerFocused !== "boolean") return null;
+  const code = source.adapter === "vscode.editor" && source.labelKind === "editor_label" && node.controlType === "Edit"
+    && node.documentContext === "vscode.editor";
+  const word = source.adapter === "word.document" && source.labelKind === "document_label" && node.controlType === "Document";
+  if (!code && !word) return null;
+  const clean = (value: string) => redactSensitive(value).replace(/\s+/gu, " ").trim();
+  const label = typeof node.name === "string" ? clean(node.name) : "";
+  return { ref, adapter: source.adapter, provider_focused: source.providerFocused, pixel_visibility: "unverified",
+    ...(label ? { label: { kind: source.labelKind, source: source.labelSource, value: label } } : {}),
+    ...(typeof node.visibleText === "string" && source.visibleTextSource === "uia.visible_ranges"
+      ? { provider_range_text: clean(node.visibleText) } : {}),
+    ...(code && typeof node.text === "string" ? { document_context: clean(node.text) } : {}),
+    ...(truncated ? { capture_truncated: true as const } : {}),
+  };
+}
+
+// Fit text fields inside an intact JSON object. Sampling the serialized object
+// itself could detach content from its label or erase its visibility qualifier.
+function renderDocumentObservation(observation: DocumentObservation, budget: number): string {
+  const prefix = "    document observation: ";
+  const { provider_range_text: visible, document_context: context, label, ...metadata } = observation;
+  const fields = [visible, context];
+  const demands = fields.map((value, index) => Math.min(value?.length ?? 0, index ? MAX_DOCUMENT_CONTEXT_CHARS : MAX_SCREEN_LINE_CHARS));
+  let includeLabel = !!label && label.value.length <= 256;
+  const render = (allowance: number): string => {
+    const shares = shareBudget(demands, allowance);
+    return prefix + JSON.stringify({ ...metadata, ...(includeLabel ? { label } : label ? { label_omitted: true } : {}),
+      ...(visible !== undefined ? { provider_range_text: sampleText(visible, shares[0]) } : {}),
+      ...(context !== undefined ? { document_context: sampleText(context, shares[1]) } : {}),
+      ...(fields.some((value, index) => (value?.length ?? 0) > shares[index]) ? { content_sampled: true } : {}),
+    });
+  };
+  const complete = render(demands.reduce((sum, value) => sum + value, 0));
+  if (complete.length <= budget) return complete;
+  if (render(0).length + 24 > budget) includeLabel = false;
+  let best = render(0);
+  if (best.length > budget) return "";
+  let low = 0, high = demands.reduce((sum, value) => sum + value, 0);
+  while (low <= high) {
+    const middle = Math.floor((low + high) / 2);
+    const candidate = render(middle);
+    if (candidate.length <= budget) { best = candidate; low = middle + 1; }
+    else high = middle - 1;
+  }
+  return best;
+}
+
+function renderDocumentObservations(observations: DocumentObservation[], budget: number): string {
+  if (!observations.length || budget <= 0) return "";
+  const complete = observations.map((observation) => renderDocumentObservation(observation, MAX_EVIDENCE_CHARS)).join("\n");
+  if (complete.length <= budget) return complete;
+  const indexes = sampleIndexes(observations.length, Math.max(1, Math.floor(budget / 360)));
+  const separators = sampleSeparators(indexes, "\n");
+  const shares = shareBudget(indexes.map((index) => renderDocumentObservation(observations[index], MAX_EVIDENCE_CHARS).length),
+    budget - separators.reduce((sum, separator) => sum + separator.length, 0));
+  return indexes.map((index, offset) => {
+    const rendered = renderDocumentObservation(observations[index], shares[offset]);
+    return rendered ? `${offset ? separators[offset - 1] : ""}${rendered}` : "";
+  }).join("");
+}
+
+function windowsWindowIdentity(event: HistoryEvent): string | null {
+  const details = event.details;
+  if (event.application?.platform !== "windows" || !details || !Number.isSafeInteger(details.pid)
+      || ![details.nativeSessionId, details.processStart, details.hwnd].every((value) => typeof value === "string" && value.length > 0)) return null;
+  return JSON.stringify([applicationId(event.application), event.application.executable, details.nativeSessionId,
+    details.pid, details.processStart, details.hwnd]);
+}
+
 export function compactEventEvidence(lines: string[]): string {
   const events: HistoryEvent[] = [];
   for (const line of lines) {
@@ -361,6 +449,8 @@ export function compactEventEvidence(lines: string[]): string {
 
   interface Arc {
     app: string;
+    identity: string;
+    window?: string;
     from: string;
     to: string;
     clicks: number;
@@ -375,31 +465,51 @@ export function compactEventEvidence(lines: string[]): string {
     urls: string[];
     screen: string[];
     documents: string[];
+    observations: DocumentObservation[];
+    observationKeys: Set<string>;
   }
   const arcs: Arc[] = [];
   // Text already sent for an application is not sent again when the user
   // returns to it: the unchanged chat list or sidebar says nothing new.
   const shownByApp = new Map<string, Set<string>>();
   const documentsByApp = new Map<string, Set<string>>();
+  const windows = new Map<string, string>();
+  let documentSequence = 0;
   for (const event of events) {
     const app = redactSensitive(event.application?.name || applicationId(event.application) || "unknown");
+    const windowIdentity = windowsWindowIdentity(event);
+    // A generation change starts a new capture arc, not a new physical window.
+    const identity = windowIdentity ? JSON.stringify([windowIdentity, event.details?.generation]) : app;
+    if (windowIdentity && !windows.has(windowIdentity)) windows.set(windowIdentity, `W${windows.size + 1}`);
     let arc = arcs.at(-1);
-    if (!arc || arc.app !== app) {
-      arc = { app, from: clockTime(event.timestamp), to: "", clicks: 0, typedChars: 0, textKeyPresses: 0, injectedActions: 0, observedClicks: false, scrolls: 0, keys: [], labels: [], searchQueries: [], urls: [], screen: [], documents: [] };
+    if (!arc || arc.identity !== identity) {
+      arc = { app, identity, window: windowIdentity ? windows.get(windowIdentity) : undefined, from: clockTime(event.timestamp), to: "", clicks: 0, typedChars: 0, textKeyPresses: 0, injectedActions: 0, observedClicks: false, scrolls: 0, keys: [], labels: [], searchQueries: [], urls: [], screen: [], documents: [], observations: [], observationKeys: new Set() };
       arcs.push(arc);
     }
     arc.to = clockTime(event.timestamp) || arc.to;
     if (event.accessibility) {
-      const shown = shownByApp.get(app) ?? new Set<string>();
-      shownByApp.set(app, shown);
+      const shown = shownByApp.get(identity) ?? new Set<string>();
+      shownByApp.set(identity, shown);
+      const observationKeys = new Set<string>();
       for (const node of event.accessibility.nodes) {
         if (node.redaction || (node.documentStatus && node.documentStatus !== "available")) continue;
+        const observation = event.application?.platform === "windows" ? documentObservation(node, "", event.accessibility.truncated) : null;
+        if (observation) {
+          // Node keys are snapshot-content hashes, not persistent file IDs. Only
+          // consecutive identical observations dedupe; A/B/A must retain the return to A.
+          const key = JSON.stringify([node.key, node.parentKey, observation]);
+          observationKeys.add(key);
+          if (!arc.observationKeys.has(key)) {
+            arc.observations.push({ ...observation, ref: `D${++documentSequence}` });
+          }
+          continue;
+        }
         const documentContext = event.application?.platform === "windows" && node.controlType === "Edit"
           && node.documentStatus === "available" && node.documentContext === "vscode.editor";
         if (documentContext && node.text) {
           const text = sampleText(redactSensitive(node.text).replace(/\s+/gu, " ").trim(), MAX_DOCUMENT_CONTEXT_CHARS);
-          const documents = documentsByApp.get(app) ?? new Set<string>();
-          documentsByApp.set(app, documents);
+          const documents = documentsByApp.get(identity) ?? new Set<string>();
+          documentsByApp.set(identity, documents);
           if (text && !documents.has(text)) { documents.add(text); arc.documents.push(text); }
         }
         // A full scoped-editor DocumentRange is never a fallback for missing visible ranges.
@@ -411,6 +521,7 @@ export function compactEventEvidence(lines: string[]): string {
           if (text && !shown.has(text)) { shown.add(text); arc.screen.push(text); }
         }
       }
+      arc.observationKeys = observationKeys;
     }
     if (typeof event.ax?.text === "string") {
       // What came into view: all of a full snapshot, the added lines of a diff.
@@ -484,8 +595,10 @@ export function compactEventEvidence(lines: string[]): string {
 
   const active = arcs
     // Reading is activity too: a window looked at without a click still counts.
-    .filter((arc) => arc.clicks || arc.scrolls || arc.typedChars || arc.textKeyPresses || arc.keys.length || arc.urls.length || arc.labels.length || arc.screen.length || arc.documents.length);
-  const indexes = sampleIndexes(active.length, MAX_ARCS);
+    .filter((arc) => arc.clicks || arc.scrolls || arc.typedChars || arc.textKeyPresses || arc.keys.length || arc.urls.length || arc.labels.length || arc.screen.length || arc.documents.length || arc.observations.length);
+  // Structured observations need enough room for intact provenance and useful
+  // text. Sample fewer arcs instead of stripping labels or emitting JSON fragments.
+  const indexes = sampleIndexes(active.length, active.some((arc) => arc.observations.length) ? 24 : MAX_ARCS);
   const blocks = indexes.map((index) => {
     const arc = active[index];
     const parts: string[] = [];
@@ -495,13 +608,13 @@ export function compactEventEvidence(lines: string[]): string {
     if (arc.typedChars) parts.push(`typed ${arc.typedChars} character(s)`);
     if (arc.textKeyPresses) parts.push(`${arc.textKeyPresses} text-key press(es), content redacted; resulting characters unknown`);
     if (arc.keys.length) parts.push(`keys: ${sampleIndexes(arc.keys.length, MAX_ARC_KEYS).map((key) => arc.keys[key]).join(", ")}`);
-    const head = `[${arc.from}-${arc.to}] ${arc.app}${parts.length ? ` — ${parts.join("; ")}` : ""}`;
+    const head = `[${arc.from}-${arc.to}] ${arc.app}${arc.window ? ` (window ${arc.window})` : ""}${parts.length ? ` — ${parts.join("; ")}` : ""}`;
     const detail = [
       ...arc.labels.map((label) => `    interacted with: ${label}`),
       ...arc.searchQueries.map((query) => `    search query: ${JSON.stringify(query)}`),
       ...arc.urls.map((url) => `    page: ${url}`),
     ];
-    return { head, detail, screen: arc.screen, documents: arc.documents };
+    return { head, detail, screen: arc.screen, documents: arc.documents, observations: arc.observations };
   });
   const screenPrefix = "    on screen: ";
   const documentPrefix = "    document context (visibility unconfirmed): ";
@@ -510,6 +623,7 @@ export function compactEventEvidence(lines: string[]): string {
     joinedLength(block.detail, "\n"),
     block.screen.length ? screenPrefix.length + joinedLength(block.screen, " · ") : 0,
     block.documents.length ? documentPrefix.length + joinedLength(block.documents, " · ") : 0,
+    joinedLength(block.observations.map((observation) => renderDocumentObservation(observation, MAX_EVIDENCE_CHARS)), "\n"),
   ]);
   const separatorCounts = demands.map((values) => values.filter((value) => value > 0).length - 1);
   const separators = sampleSeparators(indexes, "\n");
@@ -531,6 +645,7 @@ export function compactEventEvidence(lines: string[]): string {
       block.documents.length && shares[3] > documentPrefix.length
         ? `${documentPrefix}${sampleEvidenceLines(block.documents, shares[3] - documentPrefix.length, " · ")}`
         : "",
+      renderDocumentObservations(block.observations, shares[4]),
     ].filter(Boolean).join("\n");
     return `${index ? separators[index - 1] : ""}${rendered}`;
   }).join("");

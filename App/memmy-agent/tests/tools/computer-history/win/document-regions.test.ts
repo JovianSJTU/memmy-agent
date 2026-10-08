@@ -64,6 +64,8 @@ describe("Word document scope", () => {
   it("permits only a Word document rooted in its exact window class chain", () => {
     expect(JSON.stringify(normalizeWord())).toContain("SYNTHETIC-WORD-BODY");
     expect(normalizeWord()?.accessibility?.nodes.at(-1)?.documentContext).toBeUndefined();
+    expect(normalizeWord()?.accessibility?.nodes.at(-1)?.documentEvidence).toMatchObject({ adapter: "word.document",
+      labelKind: "document_label", labelSource: "uia.name", textSource: "uia.document_range", visibleTextSource: "uia.visible_ranges" });
     expect(parseWindowsSettings({ version: 1, applications: [{ executable: wordBinding.executable,
       documentRegions: [{ controlType: "Document", automationId: "", scope: "word.document" }] }] }).applications[0]?.documentRegions).toHaveLength(1);
     expect(() => parseNativePolicy({ ...wordPolicy, applications: [{ ...wordPolicy.applications[0], executable }] })).toThrow();
@@ -101,10 +103,13 @@ describe("independent TS document privacy boundary", () => {
     expect(JSON.stringify(normalize())).toContain("SYNTHETIC-DOCUMENT-CONTENT");
     expect(normalize()?.accessibility?.nodes.at(-1)?.documentStatus).toBe("available");
     expect(normalize()?.accessibility?.nodes.at(-1)?.documentContext).toBe("vscode.editor");
+    expect(normalize()?.accessibility?.nodes.at(-1)?.documentEvidence).toEqual({ adapter: "vscode.editor",
+      labelKind: "editor_label", labelSource: "uia.name", textSource: "uia.document_range", providerFocused: false });
   });
   it("does not accept native assertions of document context authority", () => {
     const nodes = tree();
     expect(() => snapshot(nodes.map((node) => ({ ...node, documentContext: "vscode.editor" })))).toThrow();
+    expect(() => snapshot(nodes.map((node) => ({ ...node, documentEvidence: { adapter: "vscode.editor" } })))).toThrow();
   });
   it.each([
     (nodes: NativeNode[]) => { nodes[1]!.automationId = "workbench.parts.auxiliarybar"; },
@@ -141,6 +146,7 @@ describe("independent TS document privacy boundary", () => {
     delete body.name; delete body.text; body.redaction = "edit_control"; body.documentStatus = "label_only";
     expect(normalize(nodes)?.accessibility?.nodes.at(-1)).toMatchObject({ documentStatus: "label_only", redaction: "edit_control" });
     expect(normalize(nodes)?.accessibility?.nodes.at(-1)?.documentContext).toBeUndefined();
+    expect(normalize(nodes)?.accessibility?.nodes.at(-1)?.documentEvidence).toBeUndefined();
     const normalizer = new SnapshotNormalizer(); normalizer.normalize(snapshot(), policy, "r");
     const changed = tree()[1]!; changed.automationId = "workbench.parts.panel";
     const delta = parseNativeEvent({ ...envelope(2), kind: "snapshot", context: binding, trigger: { kinds: ["sample"], count: 1 },

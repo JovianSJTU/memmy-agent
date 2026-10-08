@@ -120,6 +120,14 @@ export class SnapshotNormalizer {
         ...(node.documentStatus ? { documentStatus: node.documentStatus } : {}),
         ...(node.documentStatus === "available" && !node.redaction && isVsCodeEditorBody(node, nodes, rule)
           ? { documentContext: "vscode.editor" as const } : {}),
+        ...(node.documentStatus === "available" && !node.redaction && (isVsCodeEditorBody(node, nodes, rule) || isWordDocument(node, nodes, rule))
+          ? { documentEvidence: {
+            adapter: isVsCodeEditorBody(node, nodes, rule) ? "vscode.editor" as const : "word.document" as const,
+            labelKind: isVsCodeEditorBody(node, nodes, rule) ? "editor_label" as const : "document_label" as const,
+            labelSource: "uia.name" as const, textSource: "uia.document_range" as const,
+            ...(node.visibleText !== undefined ? { visibleTextSource: "uia.visible_ranges" as const } : {}),
+            providerFocused: node.focused,
+          } } : {}),
         ...Object.fromEntries(fields.filter((field) => node[field] !== undefined).map((field) => [field, node[field]])),
       })) },
     } satisfies HistoryEvent);

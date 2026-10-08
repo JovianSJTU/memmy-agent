@@ -1,26 +1,42 @@
 // Evidence classification, deliberately independent of the live harness.
+export function collectorPreconditionError(exitCode, stderr) {
+  if (exitCode !== 4) return undefined;
+  const alreadyRunning = stderr.split(/\r?\n/u).some((line) => {
+    try { return JSON.parse(line).diagnostic === "collector_already_running"; }
+    catch { return false; }
+  });
+  return alreadyRunning ? "collector_already_running" : undefined;
+}
+
 export function analyzeCapability({ marker, raw, native = [], normalized = [], records = [], watch, error }) {
   const snapshots = native.filter((event) => event.kind === "snapshot");
   const nativeNodes = snapshots.flatMap((event) => event.snapshot.nodes ?? event.snapshot.added ?? []);
   const bodies = (raw?.probe?.nodes ?? []).filter((node) => node.matchedSyntheticBody);
+  const markerSources = (node) => ({
+    documentRange: node.text?.includes(marker) ?? false,
+    visibleRanges: (node.visibleRanges ?? []).some((range) => range.rangeHr === 0 && range.textHr === 0
+      && range.text?.includes(marker)),
+  });
+  const bodyContains = (node) => Object.values(markerSources(node)).some(Boolean);
   const contains = (items) => JSON.stringify(items).includes(marker);
   const layers = {
-    systemUia: bodies.some((node) => node.text?.includes(marker)),
+    systemUia: bodies.some(bodyContains),
     native: contains(nativeNodes), normalized: contains(normalized), file: contains(records),
   };
   const validForeground = (value) => value?.hookInstalled === true && value.mismatch === false;
-  const conditionValid = validForeground(watch?.foreground) && watch.identityStable === true
+  const capturePreconditionInvalid = error === "collector_already_running";
+  const conditionValid = !capturePreconditionInvalid && validForeground(watch?.foreground) && watch.identityStable === true
     && validForeground(raw?.foreground) && raw.identityStable === true;
   const correlated = bodies.map((node) => ({ controlType: node.controlType, automationId: node.automationId,
     runtimeId: node.runtimeId, name: node.name, password: node.password, textPattern: node.textPattern,
-    markerFound: node.text?.includes(marker) ?? false, productionDecision: node.production,
+    markerFound: bodyContains(node), markerSources: markerSources(node), productionDecision: node.production,
     nativeMatches: nativeNodes.filter((item) => !!node.runtimeId && item.runtimeId === node.runtimeId)
       .map((item) => ({ controlType: item.controlType, automationId: item.automationId, redaction: item.redaction,
         hasText: item.text !== undefined, hasVisibleText: item.visibleText !== undefined })) }));
   let conclusion;
   const explicitInvalid = watch?.foreground?.mismatch === true || watch?.identityStable === false
     || raw?.foreground?.mismatch === true || raw?.identityStable === false || raw?.error === "not_foreground";
-  if (explicitInvalid) conclusion = "precondition_invalid";
+  if (explicitInvalid || capturePreconditionInvalid) conclusion = "precondition_invalid";
   else if (!conditionValid) conclusion = error ? "harness_or_capture_error" : "precondition_invalid";
   else if (layers.normalized && !layers.file) conclusion = "writer_gap";
   else if (layers.native && !layers.normalized) conclusion = "adapter_gap";

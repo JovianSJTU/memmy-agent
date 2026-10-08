@@ -26,6 +26,15 @@ export interface CaptureNode {
   documentStatus?: "available" | "label_only" | "read_failed";
   /** Assigned by the validated adapter, not by the native provider. Full text is context, not visibility evidence. */
   documentContext?: "vscode.editor";
+  /** Adapter-verified sources, not a filename or a persistent document identity. */
+  documentEvidence?: {
+    adapter: "vscode.editor" | "word.document";
+    labelKind: "editor_label" | "document_label";
+    labelSource: "uia.name";
+    textSource: "uia.document_range";
+    visibleTextSource?: "uia.visible_ranges";
+    providerFocused: boolean;
+  };
   providerOffscreen: boolean;
 }
 

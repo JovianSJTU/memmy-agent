@@ -6,7 +6,7 @@ import childProcess from "node:child_process";
 import readline from "node:readline";
 import { syncBuiltinESMExports } from "node:module";
 import { fileURLToPath, pathToFileURL } from "node:url";
-import { analyzeCapability } from "./history-capability-analysis.mjs";
+import { analyzeCapability, collectorPreconditionError } from "./history-capability-analysis.mjs";
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../../..");
 const source = path.join(root, "App/memmy-agent/src/tools/computer-history/win");
@@ -39,16 +39,25 @@ async function recordProduct(binary, policyFile, directory, modulePath) {
   const eventsFile = path.join(directory, "events.jsonl");
   const normalized = [];
   const raw = [];
+  const diagnostics = [];
   const originalSpawn = childProcess.spawn;
   const { SnapshotNormalizer } = await import(modulePath("normalize"));
   const originalNormalize = SnapshotNormalizer.prototype.normalizeEvents;
   let spawned = 0; let observedChild; let bytes = 0; let overflow = false; let failure;
+  let diagnosticBytes = 0; let diagnosticsTruncated = false; let exitCode = null; let signal = null;
   // Transparent taps in this test process only: preserve arguments, bytes, this and return values.
   childProcess.spawn = function (command, ...args) {
     const child = originalSpawn.call(this, command, ...args);
     if (path.resolve(String(command)).toLowerCase() === path.resolve(binary).toLowerCase()) {
       ++spawned; observedChild = child;
       child.stdout.on("data", (chunk) => { bytes += chunk.length; if (bytes > 16 * 1024 * 1024) { overflow = true; child.kill(); } else raw.push(Buffer.from(chunk)); });
+      child.stderr.on("data", (chunk) => {
+        const remaining = Math.max(0, 65536 - diagnosticBytes);
+        if (chunk.length > remaining) diagnosticsTruncated = true;
+        if (remaining > 0) diagnostics.push(Buffer.from(chunk).subarray(0, remaining));
+        diagnosticBytes += chunk.length;
+      });
+      child.on("close", (code, stoppedBy) => { exitCode = code; signal = stoppedBy; });
     }
     return child;
   };
@@ -81,8 +90,11 @@ async function recordProduct(binary, policyFile, directory, modulePath) {
     if (spawned !== 1 || overflow || native[0]?.collector?.testHooks !== false || native.at(-1)?.kind !== "session.stopped")
       throw new Error("production_stream_incomplete");
   } catch (error) { failure ??= error.message; }
+  const stderr = Buffer.concat(diagnostics).toString("utf8");
+  failure = collectorPreconditionError(exitCode, stderr) ?? failure;
   const records = lines(eventsFile);
-  save(path.join(directory, "capture.json"), { spawned, overflow, state: recorder?.state, error: failure ?? null });
+  save(path.join(directory, "capture.json"), { spawned, overflow, exitCode, signal, stderr, diagnosticsTruncated,
+    state: recorder?.state, error: failure ?? null });
   return { native, normalized, records, error: failure };
 }
 

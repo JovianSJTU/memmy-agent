@@ -695,3 +695,141 @@ Electron Builder（`prompt-final/prompt-dedup-package.log`）；最终源码/安
 - Word 完整替换操作、真实 Chat/终端输入阴性检查、正文不可用提示、新增能力的 Desktop UI 与聊天端到端仍待补测。
 - IME、多屏/DPI、锁屏、长期运行以及本轮共享摘要改动后的 Mac 实机回归仍需单独完成。
   已验证的包内组件调用和受控检索不能替代这些验收。
+
+## 2026-10-08：文档来源证据与 VS Code 验证链路纠偏
+
+本轮在 `06efd1aa` 后补充结构化文档证据；不是再次实现原生正文接口。
+本机证据根目录：`D:/memmy-agent/App/shell/desktop/release/document-evidence-20261008/`（以下相对路径均指此目录）。
+只采集指定合成文档；真实编辑器操作、四层采集、自动回归、包内受控调用和模型质量分别记账。
+
+### 实现与自动回归
+
+- TS 独立复核 Word/Code 正文范围后生成 `documentEvidence`，把 `uia.name` 标签、DocumentRange、
+  GetVisibleRanges 和 provider 焦点来源明确传给共享摘要。原生严格协议不接受伪造的该字段。
+- 摘要中的 `document observation:` 为完整 JSON，标签与正文处于同一观测；编辑器标签不是已验证的文件名。
+  不从 `pretend-invoice.xlsx` 等正文首行反推文件名，不用正文补齐可见范围，不以焦点推断阅读或编辑。
+  相同名称的分屏保留独立观测；同窗口 A→B→A 保留返回 A；generation 变化分段但不增加窗口编号。
+  名称过长时省略并标记，预算采样保留合法 JSON、来源和截断信息。Word 的摘要取材范围未扩大。
+- `regression/computer-history-validation-waC1Vw/results.json`：统一入口 **582 通过 / 0 失败 / 8 跳过**，
+  Agent 478/0/6、前端 87/0/0、契约/打包 14/0/1、生产 EXE 生命周期 3/0/1；类型、lint 和构建通过。
+  跳过分别为 POSIX 子进程、文件 symlink 权限、Swift 原生文本、Swift 鼠标、POSIX helper 执行位、
+  Swift 隐私基线、Mac 包内双 helper，以及统一入口有意不运行的 Windows 前台 fixture 内容用例。
+  未将跳过改算通过；本轮真实编辑器矩阵单独列于下表。C++ 未改动，未重复声称执行全量 CTest。
+- 新文档证据与既有正文/共享摘要定向回归最终 **100 通过 / 0 失败**；首轮 94/6 的预算处理错误已修复，
+  保留于 `development-checks.json`。最终窗口编号修正后再跑 `window-identity-tests.log`，
+  **59 通过 / 0 失败**，Agent 构建通过；这些用例与统一入口重叠，不能累加。
+- 四层诊断工具新增退出码及 64 KiB 有界 stderr，识别竞争采集器；原始系统证据同时检查有界 DocumentRange
+  和成功的 GetVisibleRanges，`markerSources` 分开归因。`harness-tests.log` **12 通过 / 0 失败**。
+
+### 验证链路问题不得归为采集功能缺陷
+
+用户明确要求：用例、窗口、验证链路或 Codex 权限/能力问题应主动修复或告知，不能冒充产品功能问题。
+本轮按此原则保留了以下失败与纠偏：
+
+1. 新 profile 的欢迎/登录引导遮住编辑器时，UIA 仍可能返回正文。`alpha-first/` 不能代表无遮挡的真实操作验收。
+   旧合成实例以 Hidden 启动后没有可操作窗口；清理自己创建的实例，改用 Normal 前台启动已有隔离 profile 后恢复。
+   `welcome-overlay.json`、`new-profile-cleanup.json`、`foreground-launch.json` 保存证据。没有修改采集器来“修复登录”。
+2. 最初连续录制通过一次性命令启动，stdin EOF 触发正常停止；`sequence/events.jsonl` 无活动是测试宿主生命周期问题。
+   改为显式保持宿主并用 stop sentinel 正常停止，`sequence-current/` 得到完整切换证据。
+3. `split-current/` 在连续采集尚未退出时启动另一采集器，原诊断只留下 `windows_collector_incomplete`，
+   该次没有保存退出码，不能事后伪造确定原因。新增诊断后在 `collector-conflict/` 受控重现：
+   退出码 4、`collector_already_running`，前台有效但测试前提无效。串行 `split-current-retry/` 四层通过。
+4. `long-end-marker/` 正文末行已到产品各层，但旧分析器只检查探针前 2,048 字符的 DocumentRange，
+   漏看同一节点 GetVisibleRanges 中的末行，误报 `product_present_probe_inconclusive`。
+   修复分析器后 `long-end-marker-retry/` 四层通过，明确 `documentRange:false / visibleRanges:true`。
+5. 日志目录的 Codex 写权限曾阻止定向测试启动；换用已有授权的执行方式后实际执行通过。
+   这不计为产品测试失败。桌面工具的首次状态可能滞后，未确认前不重复输入或宣称操作已完成。
+
+上述纠偏没有删断言、放宽采集范围或修改隐私规则。隔离 profile 的设置已按字节恢复；没有改用户日常 profile 的登录或辅助模式。
+
+### 真实编辑器合成文档矩阵
+
+VS Code 重启期间观察到版本从先前的 1.139.1 变为 **1.140.0 / 07f806f999**，记录于 `code-version-change.json`；
+以下有效矩阵均为 1.140.0、禁用扩展的隔离 profile。先生产采集、后系统探针；cold 标记表示未先用桌面工具读取正文辅助树，
+不代表系统从未启动辅助客户端。截图在当前任务的桌面操作记录中；文本与逐层数据保存在本机报告。
+
+| 用例与证据 | 实际结果及含义 |
+| --- | --- |
+| `alpha-current/`、`mode-on-restored/` | `on` 模式正文四层贯通；最后一次恢复设置并冷启动后仍通过，未改变登录状态。 |
+| `sequence-current/`、`sequence-final/` | 同一会话 13 次快照、9 条文档观测；Alpha→Beta→Alpha、分屏及焦点切换的标签与正文关联正确。后者用最终摘要模块重建证据，同一 HWND 保持 W1。 |
+| `split-current-retry/` | 左 Beta、右 Alpha，各自标签包含编辑器组，正文无交叉。 |
+| `split-shared/` | 两个不同目录下同名 shared.txt 各保留一条观测；组 1/2 的合成正文分别归属，不从名称推断同一文件。 |
+| `long-top/` | 屏幕显示 1–37 行，接口可见范围只返回第 1 行；有界正文仍采集。 |
+| `long-scrolled/` | 屏幕显示 37–73 行，原始 GetVisibleRanges 和生产输出却返回开头 10 行；多行矩形也重叠。不是 TS/落盘遗漏，且不能凭接口名称声称像素可见。 |
+| `long-cursor-end/`、`long-end-marker-retry/` | 光标在空白 151 行时接口范围为零；上移到 150 行标记后范围返回末行，末行四层贯通。长文档已有明确截断，不代表全文完整。 |
+| `mode-auto-cold/`、`mode-auto-repeat/`、`mode-auto-label/` | 前台/身份有效，但 auto 未启用辅助优化。按实际本地化标签修正选择器后，TextPattern 成功返回的仍是“现在无法访问编辑器”提示，没有正文；不是探针空 ID 或标签匹配失败的推断。 |
+| `mode-off/` | 与 auto 对照相同，接口仅返回不可访问提示；产品把它识别为 label_only，没有把提示当正文。 |
+
+`matrix-audit.json` 与补充同窗口编号检查后的 `matrix-final-audit.json` 各 **15 项证据断言通过**，包含正向采集、预期负向模式、锁冲突归因和设置恢复；
+这个数字不是 15 项全功能支持，也不与自动测试相加。auto/off 预期结果符合不等于正文可用。
+当前证据支持：本机 `on` 可读；本机 auto/off 的窗口接口未暴露正文；不支持“Windows 没有接口”或“必须登录才能采集”的结论。
+最小使用条件是按需启用 VS Code 的屏幕阅读器优化（`editor.accessibilitySupport: on`）；产品不会偷偷改用户设置。
+不同辅助客户端、版本和插件可能改变 auto 行为，后续需独立验证，不能从本样本概括全部环境。
+
+### 真实模型反例与第二轮摘要修正
+
+第一轮安装器 `Memmy-1.1.8-first-document-evidence.exe` 为 355,316,519 bytes，SHA-256
+`2879440F05FC979C1CEEB82F36189C7E88B71034E81C5C0953E6CE1DEEB3A29F`；它不含下述第二轮修正。
+第一轮包内/安装预检各 8 项通过，安装文件三项哈希及六个关键 JS 源码匹配；`installed/code-four-layer/`
+四层通过，`installed/code-service/` 5 项通过，包含一次合成模型响应及受控生产检索。这些均非 Desktop UI 或聊天端到端。
+验收时合成 alpha 缓冲区新增空行且尚未保存；按实际带 `●` 的标题绑定，未擅自丢弃缓冲区改动。
+
+已有 BYOK gpt-5.5 的三个真实请求分别保存在 `real-model-alpha/`、`real-model-sequence/`、
+`real-model-scroll/`，只提交本轮合成录制，配置哈希不变，未替换模型响应：
+
+- Alpha 的编辑器标签与正文伪文件名分开了，但部分正文仍简称 visible string，并推测它可能是跟踪的关键引用，质量为 partial。
+- 切换/分屏样本保持正确标签与同一窗口关联，但出现 “you ... viewing” 的行为归因，质量为 partial。
+- 滚动样本把接口返回的开头几行称为“focused editor showed the top portion”，与实见 37–73 行矛盾，
+  **该可见性质量检查失败**。系统 UIA、原生、TS、落盘四层一致，所以不是采集链路遗漏。
+
+据此将新摘要字段从 `provider_visible_text` 改为 `provider_range_text`，增加
+`pixel_visibility: unverified` 同时限定接口范围与文档上下文，并明确 VS Code 可在滚动后返回光标行/视口外文字。
+各摘要部分必须使用 editor context / provider range 归因，不能从焦点或合成标记推断用户阅读、编辑或用途。
+原始 JSONL 的 `visibleText` 与来源元数据没有改名或扩大权限。
+`provider-range-tests.log` **59 通过 / 0 失败**，重新构建通过。
+`source-real-model-scroll/` 使用重编译摘要模块和安装版 provider，一次真实请求后对照审阅通过；
+它明确指出无法确定视觉显示或编辑行为，属于**源码受控复验**，不能冒充最终安装版验收。
+
+### 最终安装交付与证据
+
+最终报告位于本轮证据根目录的 `final/`，本机 15:45 安装完成：
+
+- 安装器：`D:/memmy-agent/App/shell/desktop/release/Memmy-1.1.8-win32-x64-cn-unsigned.exe`。
+  **1.1.8 / x64 / cn / NotSigned**，355,305,600 bytes（约 338.85 MiB）。SHA-256
+  `F08DE95ACD59E7DC1AA631C6D64555961DDE7C642D6539FA0D95215961BB68EB`。
+- 原生 helper 未改变，584,192 bytes，SHA-256
+  `5E69EB89D8CEEC9B6BF8C5BB2F9C27760DB5EC3B8431337CABED282756732F24`。
+  安装目录仍为 `C:/Users/zephyr/AppData/Local/Programs/Memmy`。
+- `package-hashes.json`、`installed-hashes.json` 的 Desktop/ASAR/helper 三项匹配，
+  `installed-source-match.json` 六个关键模块与最终源码构建匹配；`asar-verification.log` 的正式版本及配置边界检查通过。
+- `packaged/preflight.json` 与 `installed/preflight.json` **各 8 通过 / 0 失败**，分别实际加载三个 SQLite 实例；
+  PATH 不含开发工具，helper 覆盖路径故意无效，使用的是 ASAR 外包内生产 helper。
+- `installed/code-four-layer/` 四层贯通、前台和身份有效、无隐私阴性标记泄漏。
+  `installed/code-service/` **5 通过 / 0 失败**：实际采集、正常停止、结构化摘要请求、一次合成模型响应、生产检索和停止后文件稳定。
+  摘要请求实际含有 `provider_range_text`、`pixel_visibility: unverified` 和正确 `uia.name` 标签。
+- `real-model-alpha/`、`real-model-sequence/`、`real-model-scroll/`：最终安装版各一次现有 BYOK gpt-5.5 请求，
+  对照标题、描述和全文审阅，**本次三个样本均通过限定的来源归因检查**，见 `model-quality-review.json`。
+  没把正文伪文件名当标签，A/B/A 和分屏关联正确，滚动样本明确像素可见性未验证，未虚构阅读或编辑结果。
+  这是受控样本结论，不保证所有随机输出或实际业务摘要质量。
+- `real-model-retrieval/results.json`：安装版生产检索读取隔离复制的真实模型摘要，**1 项通过**，不是聊天端到端。
+  本轮真实 provider 调用共 **7 次**（首轮安装版 3、源码复验 1、最终安装版 3），没有统计 SDK 内部 HTTP 重试；
+  与两轮服务各一次合成模型响应分别记录。所有真实模型输入均为合成记录，配置哈希未变。
+- `cleanup.json`：采集器、探针与测试宿主均已退出，原有 Memory-only 服务健康检查 200；
+  `node-abi-query.json` 确认开发 SQLite 已恢复 Node ABI 137 且真实查询通过。隔离 Code profile 的设置按字节恢复。
+  未保存的合成 Alpha 缓冲区保留，未自动丢弃；没有清理用户 VS Code 登录状态或日常窗口。
+
+打包过程的失败也保留：第一次完整流程在 Builder 阶段长期读取文件但未形成 ASAR，主动停止后返回 127，
+`package-interruption.json` 记录了该次任务进程。沿用已验证暂存运行时、更新最终摘要模块并执行相同生产 Builder 配置后成功。
+随后第二轮快捷重打包漏掉了“恢复开发 Node ABI 后，重新准备 Electron SQLite”这一步，
+`provider-range-final/packaged/preflight.json` 明确报 ABI 137/139 不匹配，**该包未安装**。
+正式 `build-nsis.sh` 原本就有准备与查询门禁；这是本轮执行链路遗漏，不是新的采集或仓库打包功能缺陷。
+最终 `final/repack-final.ps1` 补回相同步骤，`electron-sqlite-query.json` 先验证 Electron ABI 139 的实际查询，
+再打包、包内检查、安装和复验。被拒绝的包及首轮模型输出仍保留，未用新结果覆盖。
+
+### 尚未覆盖的下一阶段
+
+本轮完成结构化证据、VS Code 合成真实编辑器矩阵、安装组件和真实摘要复验；没有完成新增能力的 Desktop 页面操作或聊天端到端。
+下一步应在隔离合成数据下走实际设置页→开始/停止→摘要展示→聊天调用检索→结果归因，记录真实工具调用与模型请求，
+不能用上述服务直调或检索直调代替。Word 新来源字段本轮有自动回归，但未新增 Word 实机矩阵；
+真实 Chat/终端输入阴性、IME、多屏/DPI、锁屏、长期运行及本次共享摘要调整后的 Mac 实机回归仍待独立验收。
+辅助模式或接口范围限制应作为环境/提供程序条件说明，测试权限、遮挡、宿主退出或错误选择器应作为验证问题修复，不能混为功能不支持。
