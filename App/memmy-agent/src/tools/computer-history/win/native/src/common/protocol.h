@@ -34,6 +34,7 @@ struct NodeRecord {
   bool providerOffscreen = false;
   std::optional<bool> password;  // nullopt: provider did not report IsPassword
   std::string redaction;         // empty when content was permitted
+  std::string documentStatus;    // scoped editor only: available | label_only | read_failed
   std::optional<std::string> name;
   std::optional<std::string> text;
   std::optional<std::string> visibleText;
@@ -41,6 +42,11 @@ struct NodeRecord {
   std::optional<std::array<double, 4>> bounds;  // left, top, width, height (physical px)
   std::vector<std::string> missing;             // properties that failed to read
 };
+
+// Fixed VS Code shape: Edit("") <- Text("") <- Group("") <- Group(workbench.parts.editor).
+// Parents must precede the node, be readable and have successfully read AutomationIds.
+bool IsVsCodeEditorBody(const NodeRecord& node, const std::vector<NodeRecord>& preceding, const policy::AppRule& rule);
+void FinalizeScopedDocument(NodeRecord& node);
 
 // Stable content key (FNV-1a 64, hex) over identity and content fields. Focus, bounds and the
 // provider offscreen flag are excluded so they do not churn deltas.

@@ -116,7 +116,7 @@ bool ContextFromJson(const Json& json, ContextRecord& out) {
 bool NodeFromJson(const Json& json, NodeRecord& node) {
   if (!OnlyKeys(json, {"runtimeId", "controlType", "automationId", "depth", "parent", "focused",
                        "providerOffscreen", "password", "redaction", "name", "text", "visibleText", "value",
-                       "bounds", "missing"})) {
+                       "bounds", "missing", "documentStatus"})) {
     return false;
   }
   std::string controlType;
@@ -146,6 +146,10 @@ bool NodeFromJson(const Json& json, NodeRecord& node) {
   if (password->is_boolean()) node.password = password->get<bool>();
   if (json.contains("redaction")) {
     if (!GetString(json, "redaction", 64, node.redaction) || !classify::RedactionFromCode(node.redaction)) return false;
+  }
+  if (json.contains("documentStatus")) {
+    if (!GetString(json, "documentStatus", 32, node.documentStatus) ||
+        (node.documentStatus != "available" && node.documentStatus != "label_only" && node.documentStatus != "read_failed")) return false;
   }
   for (auto [key, field] : {std::pair{"name", &node.name}, std::pair{"text", &node.text},
                             std::pair{"visibleText", &node.visibleText}, std::pair{"value", &node.value}}) {
@@ -178,7 +182,7 @@ bool NodeFromJson(const Json& json, NodeRecord& node) {
 }
 
 classify::NodeDecision Recheck(const NodeRecord& node, const policy::Policy& policy, const policy::AppRule& rule,
-                               bool patternsAvailable) {
+                               bool patternsAvailable, bool scopedDocument) {
   const std::wstring automationId = text::FromUtf8(node.automationId).value_or(L"");
   classify::NodeFacts facts;
   facts.controlType = node.controlType;
@@ -189,10 +193,44 @@ classify::NodeDecision Recheck(const NodeRecord& node, const policy::Policy& pol
   facts.hasKeyboardFocus = node.focused;
   facts.textPatternAvailable = patternsAvailable;
   facts.valuePatternAvailable = patternsAvailable;
+  facts.scopedDocument = scopedDocument;
   return classify::Classify(facts, policy, rule);
 }
 
 }  // namespace
+
+bool IsVsCodeEditorBody(const NodeRecord& node, const std::vector<NodeRecord>& preceding, const policy::AppRule& rule) {
+  const auto knownId = [](const NodeRecord& item) {
+    return std::find(item.missing.begin(), item.missing.end(), "automationId") == item.missing.end();
+  };
+  if (!policy::HasVsCodeEditorScope(rule) || node.controlType != classify::kEdit || !node.automationId.empty() ||
+      node.password != false || !knownId(node)) return false;
+  int parent = node.parent;
+  int depth = node.depth;
+  const std::array<long, 3> types = {classify::kText, classify::kGroup, classify::kGroup};
+  for (std::size_t i = 0; i < types.size(); ++i) {
+    if (parent < 0 || static_cast<std::size_t>(parent) >= preceding.size()) return false;
+    const auto& ancestor = preceding[static_cast<std::size_t>(parent)];
+    if (ancestor.controlType != types[i] || ancestor.automationId != (i == 2 ? "workbench.parts.editor" : "") ||
+        ancestor.password != false || !ancestor.redaction.empty() || !knownId(ancestor) || ancestor.depth != --depth) return false;
+    parent = ancestor.parent;
+  }
+  return true;
+}
+
+void FinalizeScopedDocument(NodeRecord& node) {
+  const auto trim = [](const std::string& text) -> std::string_view {
+    const auto start = text.find_first_not_of(" \r\n\t");
+    if (start == std::string::npos) return {};
+    return std::string_view(text).substr(start, text.find_last_not_of(" \r\n\t") - start + 1);
+  };
+  node.documentStatus = !node.name || !node.text ? "read_failed"
+    : !trim(*node.name).empty() && trim(*node.name) == trim(*node.text) ? "label_only" : "available";
+  if (node.documentStatus != "available") {
+    node.name.reset(); node.text.reset(); node.visibleText.reset(); node.value.reset();
+    node.redaction = "edit_control";
+  }
+}
 
 std::string FormatUtcTimestamp(std::uint64_t filetimeTicks) {
   // FILETIME epoch 1601-01-01 is 134774 days before 1970-01-01.
@@ -229,6 +267,7 @@ std::string NodeKey(const NodeRecord& node, std::string_view parentKey) {
   Fnv(hash, std::to_string(node.controlType));
   Fnv(hash, node.automationId);
   Fnv(hash, node.redaction);
+  if (!node.documentStatus.empty()) Fnv(hash, node.documentStatus);
   Fnv(hash, node.password ? (*node.password ? "1" : "0") : "-");
   Fnv(hash, node.focused ? "1" : "0");
   Fnv(hash, node.providerOffscreen ? "1" : "0");
@@ -296,6 +335,7 @@ Json NodeToJson(const NodeRecord& node, const std::string* key, const std::strin
   json["providerOffscreen"] = node.providerOffscreen;
   json["password"] = node.password ? Json(*node.password) : Json(nullptr);
   if (!node.redaction.empty()) json["redaction"] = node.redaction;
+  if (!node.documentStatus.empty()) json["documentStatus"] = node.documentStatus;
   if (node.name) json["name"] = *node.name;
   if (node.text) json["text"] = *node.text;
   if (node.visibleText) json["visibleText"] = *node.visibleText;
@@ -445,7 +485,20 @@ bool WorkerResponseFromJson(const Json& json, const policy::Policy& policy, cons
       error = "worker_privacy_violation";
       return false;
     }
-    const auto permitted = Recheck(node, policy, rule, true);
+    const bool scoped = IsVsCodeEditorBody(node, out.nodes, rule);
+    if ((!node.documentStatus.empty() && !scoped) || (scoped && hasContent && node.documentStatus != "available")) {
+      error = "worker_privacy_violation";
+      return false;
+    }
+    if (node.documentStatus == "available") {
+      auto checked = node;
+      FinalizeScopedDocument(checked);
+      if (checked.documentStatus != "available") { error = "worker_privacy_violation"; return false; }
+    } else if (!node.documentStatus.empty() && (hasContent || node.redaction != "edit_control")) {
+      error = "worker_privacy_violation";
+      return false;
+    }
+    const auto permitted = Recheck(node, policy, rule, true, scoped);
     if ((node.name && !permitted.readName) || ((node.text || node.visibleText) && !permitted.readDocumentText) ||
         (node.value && !permitted.readSearchValue)) {
       error = "worker_privacy_violation";
@@ -453,7 +506,7 @@ bool WorkerResponseFromJson(const Json& json, const policy::Policy& policy, cons
     }
     // Evaluated without pattern availability: the most restrictive view that still lets an
     // unreadable authorized Document fall back to its independently checked children.
-    blocksChildren.push_back(!Recheck(node, policy, rule, false).traverseChildren);
+    blocksChildren.push_back(!Recheck(node, policy, rule, false, scoped).traverseChildren);
     for (const auto* field : {&node.name, &node.text, &node.visibleText, &node.value}) {
       if (!*field) continue;
       const auto units = text::Utf16Length(**field).value_or(SIZE_MAX);

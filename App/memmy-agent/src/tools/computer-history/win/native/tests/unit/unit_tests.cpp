@@ -486,6 +486,78 @@ TEST(worker_response_accepts_permitted_content) {
   CHECK(f.Validate(f.Response(nodes)) == "ok");
 }
 
+TEST(scoped_editor_policy_is_not_an_empty_id_wildcard) {
+  const auto good = R"({"version":1,"applications":[{"pid":4242,"executable":"C:\\Apps\\Code.exe","documentRegions":[{"controlType":"Edit","automationId":"","scope":"vscode.editor"}]}]})";
+  auto parsed = policy::Parse(good);
+  CHECK(parsed.policy && policy::HasVsCodeEditorScope(parsed.policy->applications[0]));
+  CHECK(!policy::MatchesSelector(parsed.policy->applications[0].documentRegions, classify::kEdit, L""));
+  Json input = *ParseJsonStrict(good, 32);
+  input["applications"][0]["executable"] = "C:\\Apps\\Other.exe";
+  CHECK(!policy::Parse(DumpJson(input)).policy);
+  input = *ParseJsonStrict(good, 32);
+  input["applications"][0]["searchFields"] = input["applications"][0]["documentRegions"];
+  CHECK(!policy::Parse(DumpJson(input)).policy);
+  input = *ParseJsonStrict(good, 32);
+  input["applications"][0]["documentRegions"][0].erase("scope");
+  CHECK(!policy::Parse(DumpJson(input)).policy);
+}
+
+TEST(worker_recomputes_scoped_editor_ancestry_and_availability) {
+  ResponseFixture f;
+  f.policy.applications[0].executable = L"C:\\Apps\\Code.exe";
+  f.policy.applications[0].documentRegions = {{classify::kEdit, L"", true}};
+  const Json nodes = Json::array({f.Node("Window", 0, -1),
+    f.Node("Group", 1, 0, {{"automationId", "workbench.parts.editor"}}), f.Node("Group", 2, 1), f.Node("Text", 3, 2),
+    f.Node("Edit", 4, 3, {{"name", "synthetic.txt"}, {"text", "SYNTHETIC-BODY"}, {"documentStatus", "available"}})});
+  CHECK(f.Validate(f.Response(nodes)) == "ok");
+  for (const auto& mutate : std::vector<std::function<void(Json&)>>{
+      [](Json& n) { n[1]["automationId"] = "workbench.parts.auxiliarybar"; },
+      [](Json& n) { n[3]["controlType"] = "Group"; },
+      [](Json& n) { n[2]["password"] = true; },
+      [](Json& n) { n[3]["password"] = nullptr; },
+      [](Json& n) { n[1]["missing"] = Json::array({"automationId"}); },
+      [](Json& n) { n[4]["missing"] = Json::array({"automationId"}); },
+      [](Json& n) { n[4]["password"] = true; },
+      [](Json& n) { n[4].erase("documentStatus"); },
+      [](Json& n) { n[4]["documentStatus"] = "label_only"; },
+      [](Json& n) { n[4]["text"] = " synthetic.txt\n"; },
+      [](Json& n) { n[4]["value"] = "private input"; }}) {
+    Json changed = nodes; mutate(changed);
+    CHECK(f.Validate(f.Response(changed)) == "worker_privacy_violation");
+  }
+  f.policy.sensitiveAutomationIds = {L"workbench.parts.editor"};
+  CHECK(f.Validate(f.Response(nodes)) == "worker_privacy_violation");
+}
+
+TEST(scoped_editor_discards_label_only_and_failed_reads) {
+  protocol::NodeRecord node;
+  node.name = "Localized unavailable label"; node.text = "Localized unavailable label\r\n";
+  node.visibleText = "Localized unavailable label";
+  protocol::FinalizeScopedDocument(node);
+  CHECK(node.documentStatus == "label_only" && !node.name && !node.text && !node.visibleText && node.redaction == "edit_control");
+  node = {}; node.name = "synthetic.txt";
+  protocol::FinalizeScopedDocument(node);
+  CHECK(node.documentStatus == "read_failed" && !node.name);
+  node = {}; node.name = "empty.txt"; node.text = "";
+  protocol::FinalizeScopedDocument(node);
+  CHECK(node.documentStatus == "available" && node.text.has_value());
+}
+
+TEST(scoped_editor_rejects_sibling_input_echoes) {
+  ResponseFixture f;
+  auto& rule = f.policy.applications[0];
+  rule.executable = L"C:\\Apps\\Code.exe";
+  rule.documentRegions = {{classify::kEdit, L"", true}};
+  classify::NodeFacts facts;
+  facts.controlType = classify::kText;
+  facts.password = classify::PasswordState::False;
+  const auto decision = classify::Classify(facts, f.policy, rule);
+  CHECK(!decision.readName && !decision.readDocumentText && decision.traverseChildren);
+  const auto nodes = Json::array({f.Node("Window", 0, -1),
+    f.Node("Text", 1, 0, {{"name", "No results for SYNTHETIC-PRIVATE-QUERY"}})});
+  CHECK(f.Validate(f.Response(nodes)) == "worker_privacy_violation");
+}
+
 TEST(worker_response_rejects_privacy_violations) {
   ResponseFixture f;
   // Content on an ordinary Edit.

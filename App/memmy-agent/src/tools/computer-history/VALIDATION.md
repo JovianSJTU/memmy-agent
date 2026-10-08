@@ -406,3 +406,142 @@ History 的 8 项跳过逐项保存在 `results.json`：1 项 POSIX 子进程信
 4. **应用适配合入后再做安装版验收。** 沿用本轮四层证据，新包验证默认规则生成、包内 helper、实际 JSONL/摘要/检索；再扩展 Excel/PPT/WPS。浏览器、网站规则、图标、鼠标语义、IME/DPI/锁屏与长稳不属于本次完成范围。
 
 本轮合成应用窗口已正常关闭，未写入用户原有文档。后续不需要用户先修改系统权限或安装新的采集运行时；只有具体应用在验证中确实需要人工操作时再说明原因。
+
+## 2026-10-07—08：Word / VS Code 受限正文适配
+
+本轮在上述四层结论上做产品接入，未扩展浏览器、Office/WPS 其他应用或系统权限。
+证据根目录为本机 `D:/memmy-agent/App/shell/desktop/release/document-adapters-20261007/`，不提交合成采集文件和二进制。
+
+### 实现与隐私边界
+
+- 应用获准且绑定实际进程后，Word 默认生成 `Edit + Body`；VS Code 默认生成显式 `scope: vscode.editor`。
+  自定义规则优先，`documentRegions: []` 禁用默认正文规则，deny、浏览器拒绝和实例身份检查保持原状。
+- VS Code 空 ID 例外只适用于 `Code.exe` 的固定元数据链：
+  `Edit("") ← Text("") ← Group("") ← Group("workbench.parts.editor")`。
+  C++ 在正文读取前后复核实时祖先、PID、密码和敏感 ID；worker 协议校验及 TS 完整树各自重建范围，
+  包括 delta 中祖先变化。文件名不授予权限，普通空 ID 选择器仍拒绝。
+- 新增可选 `documentStatus`。正文与非空节点 Name 去掉首尾 ASCII 空白后相同则为 `label_only`；
+  Name/Text 读取失败或实时授权检查失败则为 `read_failed`，均清除内容。
+  这也会保守排除正文恰好等于文件名的情况；`available` 不保证完整性或用户确实阅读。
+- **真实负向测试发现并修复旁路**：VS Code 把查找词复制到相邻的“无结果”Text 提示，旧的通用 Name
+  读取会泄露该词。启用编辑器范围后，原生分类器不再读未授权 workbench Name；TS 独立拒绝这类内容。
+  `code-find-attempt-01/` 保留泄露证据，`code-find-fixed/` 对同一查找/替换值重新验证，无泄露且正文仍贯通四层。
+  没有删除断言、扩大预算或放宽输入规则。
+
+### 真实应用的合成文档结果
+
+仍使用 Word **16.0.14334.20918**、VS Code **1.139.1**。VS Code 为隔离的 auto/on/off profile，禁用扩展；
+未改变日常 profile。四层工具使用实际 `compileWindowsPolicy()` 生成默认规则，不手工注入正文选择器。
+`real-application-summary.json` 保留 **15 轮**开发期记录，不将探索、负向、无效前提合并为通过总数。
+
+| 场景 | 结果与证据 |
+|---|---|
+| Word 两页 RTF 页面视图、移动至第二页 | `word-default-page1/`、`word-default-page2/` 均四层贯通。采集树包含两页 Body，不能据此宣称用户看过屏幕外页面。 |
+| Word 查找 | `word-find-exclusion/` 正文贯通，合成查询未出现在生产原生、归一化及文件中。 |
+| Word 替换对话框 | 主窗口清单首次因实际前台已变成对话框而无效；`word-replace-parent-attempt/` 保留。绑定实际对话框后 `word-replace-exclusion/` 有效采集 26 个节点，预填查找词未泄露；没有填写替换值或执行替换，不能声称完整替换操作验收。 |
+| Word 草稿视图 | **未支持**。`word-draft-default/` 无 Body；按实际外层 Document 名称探测的 `word-draft-document-diagnosis/` 确认系统有正文，同 RuntimeId 在生产中被规则排除。不是 Windows/Word 缺接口。 |
+| VS Code on | `code-on-default/`、修复后的 `code-find-fixed/`、`code-quick-exclusion/` 正文四层贯通；查找、替换和快速打开值均不进入生产三层。 |
+| VS Code off | 首次使用英文提示名未命中中文节点；`code-off-localized/` 使用实际中文 Name 后确认 TextPattern 只返回不可访问提示。生产节点为 `label_only`，三层均无提示文字。 |
+| VS Code auto | 本轮未显示阅读器优化状态，`code-auto-default/` 未达到原先正文预期；`code-auto-repeat/` 的正确诊断名及重复测量确认同样只返回提示。与上轮已开启优化的 auto 情况不同，不能宣称 auto 一定启用。 |
+
+各轮保留前台 watcher、身份、RuntimeId、构建哈希、HRESULT、预算和截断信息。开发期有效采集没有出现
+worker_timeout 或预算截断；样本很短，不构成长稳结论。`audit-evidence.mjs` 另断言修复后的隐私值排除及
+off/auto 的无内容 `label_only` 状态。Chat、终端的越界拒绝目前为单元测试，没有实际输入这些界面；
+搜索侧栏的实际阴性验证见下方安装版记录，没有把测试树当成真实应用操作证据。
+
+### 自动验证
+
+统一入口最终报告：`regression/computer-history-validation-TvtkcF/results.json`。
+
+| 层级 | 实际结果 |
+|---|---|
+| Agent 共享/Windows 测试 | 447 通过、0 失败、6 跳过 |
+| 前端 | 87 通过、0 失败、0 跳过 |
+| 契约及包内路径保护 | 14 通过、0 失败、1 跳过 |
+| 原生生命周期入口 | 3 通过、0 失败、1 按入口范围排除 |
+| 上述统一入口合计 | **551 通过、0 失败、8 跳过**；类型、lint、构建和两个摘要 CLI 均通过 |
+| 四层归因单测 | 9 通过、0 失败、0 跳过，`analysis-tests.tap` |
+| 四层 fixture | `fixture-controls-final/results.json`：5 个阳性/阴性对照均符合预期 |
+| 原生 Release / Debug CTest 复验 | **各 33 通过、0 失败、0 跳过**；`native-release-retry.log`、`native-debug-retry.log`，详细证据在 `native-artifacts-retry/`；其中 unit 可执行程序各运行 48 个用例 |
+
+8 项分别为：POSIX 真实子进程退出、文件 symlink 权限、2 项 Swift 原生采集/鼠标测试、Mac helper 可执行权限、
+Mac 原生 ingest、Mac Electron/Swift 包内 helper，以及统一入口明确不执行的 Windows 前台内容用例。
+它们不代表相应功能通过。Windows 前台与隐私另由原生 CTest、四层 fixture 和真实合成应用覆盖。
+
+首轮统一回归在 lint 超时（`3K9gPd`）；重试发现新增测试格式违反 `no-unexpected-multiline`（`K5coWA`），
+修正调用换行后完整重跑通过。首轮 Release/Debug CTest 各 16 通过、17 因前台前提跳过，日志与原始 artifacts
+保留，桌面清理后的复验单独记录。不同测试层级及重试次数不相加成一个通过总数。
+
+### 打包过程记录
+
+首次完整打包在准备内置 `Xenova/all-MiniLM-L6-v2` 时因远端 DNS `EAI_AGAIN` 失败，
+此前 runtime、原生 helper、版本和资源边界检查已通过，见 `package.log`。没有安装该失败产物。
+随后核对旧 `win-unpacked` 与当前安装版模型的 4 个文件 SHA-256 一致，复制到本轮独立
+`offline-model/`，通过正式脚本支持的 `MEMMY_EMBEDDING_MODEL_SOURCE_DIR` 重跑完整流程。
+来源、大小和哈希记录于 `offline-model-source.json`；未修改模型文件或跳过打包防护。
+
+正式脚本重跑成功（`package-retry-result.json`，2026-10-08 10:41），产物为 **1.1.8 / x64 / cn / NotSigned**：
+
+- 安装包：`D:/memmy-agent/App/shell/desktop/release/Memmy-1.1.8-win32-x64-cn-unsigned.exe`，
+  **355,249,963 bytes（约 338.8 MiB）**，SHA-256
+  `65109978D346B8256CA41777E7BD5759EFC0FD6D4F6089B5665458D977B26A27`。
+- 生产 helper：**581,120 bytes（567.5 KiB）**，SHA-256
+  `9298DF1FD674B90F457C746BADE7314DBB62E85C8903E2E22AE33E3A52B15126`。
+- `package-hashes.json` 保存 Desktop、ASAR、helper 和安装包哈希；`install-result.json` 确认安装退出码 0，
+  `installed-hashes.json` 确认已安装 Desktop、ASAR、helper 三项均与包一致。
+- 安装位置：`C:/Users/zephyr/AppData/Local/Programs/Memmy`。安装前正常停止既有 Memory，安装后恢复同一
+  server 命令和原配置/数据库，未改服务注册；`memory-restored.json`、`final-process-state.json` 健康检查通过。
+- 打包后已恢复开发目录 Node SQLite ABI 137，并执行真实 `SELECT 1`；`node-abi-query.json`。
+  包内 Electron SQLite ABI 139 独立验证，未被恢复开发依赖的操作覆盖。
+
+### 安装后的生产组件验证
+
+以下全部使用已安装的 `Memmy.exe` 作为 Electron Node runtime、包内 JS 和 ASAR 外 helper。
+PATH 只保留 Windows 系统目录，binary 环境变量和显式覆盖故意设为不存在路径，仍解析包内 helper。
+测试用的四层探针和调用脚本在仓库证据目录，不是产品运行依赖。每次使用新的隔离设置/记录/摘要目录，
+只授权实际合成 Word 或 VS Code 进程；设置未注入 `documentRegions`，由生产编译器生成应用默认值。
+
+| 层级 | 实际结果与证据 |
+|---|---|
+| 包内静态/受控启动检查 | `packaged/preflight.json`：8 通过、0 失败；helper、默认状态/旧范围、三处 SQLite 查询、摘要 CLI、退出诊断与接线。 |
+| 安装后同组检查 | `installed/preflight.json`：8 通过、0 失败；与上一行是不同层级，不合成 History 回归总数。 |
+| Word 正文四层 | `installed/word-four-layer/`：前台/身份有效，第二页标记贯通系统、原生、归一化及 JSONL，无截断；它当时是屏幕外页，不能据此推断摘要输入。 |
+| VS Code 正文及侧栏隐私 | `installed/code-four-layer/`：正文四层贯通，实际输入的侧栏搜索、替换值及搜索树回显均未进入生产三层；前台有效，无预算截断。 |
+| Word 服务链路 | `installed/word-service-visible-page2/results.json`：5 通过、0 失败；实际翻到第二页后，正文落盘、正常停止、实际摘要请求含第二页正文、合成模型输出、生产检索命中及停止后文件稳定。 |
+| VS Code 服务链路 | `installed/code-service-marker-line/results.json`：5 通过、0 失败；光标处于标记行时，上述链路贯通，侧栏隐私标记也未进入摘要请求。只证明此行，全文摘要限制见下。 |
+| 系统可见范围对照 | `installed/code-visible-range-line1/` 与 `line2/`：独立探针两次均返回 HRESULT 0、一个可见范围、无诊断范围截断；原生 `visibleText` 与系统逐字相同，完整正文仍贯通四层。 |
+
+**没有将失败尝试抹掉：**
+
+1. `installed/word-service/` 的首轮摘要/检索断言失败。界面与 provider 均表示第一页，第二页正文虽已落盘，
+   `providerOffscreen: true` 且没有 visibleText，因此共享摘要按既有规则排除。此轮测试错误地要求屏幕外标记
+   进入摘要，不是采集接口失效。切到第二页后在新目录复验通过，未修改产品可见性规则。
+2. `installed/code-service/` 的首轮摘要/检索断言失败。四行 DocumentRange 正文已落盘，但 `visibleText`
+   只有第一行，实际摘要请求也只有第一行。屏幕同时显示四行；将光标移动至第二行后，系统可见范围与摘要
+   改为第二行。补充独立 `GetVisibleRanges` 探针确认此行为：同一窗口、同一文档、同一策略、前台无切换，
+   两次都只返回一个范围且分别等于光标所在行。**本机 provider 的可见范围语义 + 共享摘要优先 visibleText
+   共同限制摘要覆盖面**；不是 Windows 没有正文接口，也不是 TS/文件链路丢失 DocumentRange。
+   这仍是未解决的兼容限制，第二行成功不能把第一轮失败改写成“整屏摘要通过”。
+
+服务测试脚本后来加强为等待摘要实际会采用的正文来源，再停止；模型请求先保存再断言，便于保留失败输入。
+未删除正文或隐私断言。诊断探针新增的可见范围字段只在测试构建中，Release 构建成功；原生产 helper 哈希不变。
+新增探针后另跑 `fixture-controls-visible-probe/results.json`，5 个阳性/阴性对照均符合预期。
+`audit-installed.mjs` 对最终通过报告、失败记录、正文输入、隐私值和系统/原生范围一致性执行断言，结果见
+`installed-summary.json`。这些都是**受控调用安装组件**，不是 Desktop 界面端到端或聊天检索验收；
+本轮真实模型请求为 **0**，两次成功服务链路各用一次确定性合成模型响应。先前阶段真实模型证据不挪用至本轮。
+
+Word / VS Code 合成窗口均已关闭，最终没有 recorder、worker、fixture 或 probe 残留；Memmy 仅保留原有 Memory
+服务，健康检查通过。测试没有改日常 VS Code profile、实际文档或用户 Computer History 设置。
+
+### 当前交付边界与后续条件
+
+本阶段交付的是 **Word 页面视图和 VS Code 受限正文默认接入、独立隐私复核、包内分发及上述受控验收**。
+普通输入和敏感子树保护保持，浏览器采集范围未扩展。不能宣称 Windows 与 Mac 已全量对等。
+
+后续优先：
+
+1. 为 VS Code 明确“正文范围”与“provider 可见范围”的产品语义；在 auto/on/off、光标移动、滚动、分屏等条件下
+   对照 DocumentRange、GetVisibleRanges、实际屏幕和摘要请求。未经独立可见性/隐私验证，不用全文替代当前行。
+2. 依据已确认的 Word 草稿视图外层 Document 正文，设计另一个受限范围；补齐完整替换操作、弹窗及其他 Office 版本。
+3. 对 Chat/终端补真实合成输入阴性验证，完善正文不可用状态的用户提示，再执行新适配的 Desktop 界面与真实模型验收。
+   分屏、插件、大文档、IME、多屏/DPI、锁屏和长稳仍需独立覆盖；Mac 本轮没有重跑原生回归。

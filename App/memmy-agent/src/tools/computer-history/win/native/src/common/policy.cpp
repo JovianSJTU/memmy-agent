@@ -85,13 +85,13 @@ class Parser {
   }
 
   bool Selectors(const Json& value, const std::string& path, std::initializer_list<long> allowedTypes,
-                 std::vector<ElementSelector>& out) {
+                 std::vector<ElementSelector>& out, bool allowScopes = false) {
     if (!value.is_array()) return Fail("type_invalid", path);
     if (value.size() > kMaxSelectors) return Fail("range_invalid", path);
     for (std::size_t i = 0; i < value.size(); ++i) {
       const std::string itemPath = path + "/" + std::to_string(i);
       const Json& item = value[i];
-      if (!Keys(item, itemPath, {"controlType", "automationId"})) return false;
+      if (!Keys(item, itemPath, {"controlType", "automationId", "scope"})) return false;
       if (!item.contains("controlType") || !item.contains("automationId")) return Fail("missing_key", itemPath);
       const Json& type = item["controlType"];
       if (!type.is_string()) return Fail("type_invalid", itemPath + "/controlType");
@@ -101,7 +101,11 @@ class Parser {
       }
       ElementSelector selector;
       selector.controlType = *controlType;
-      if (!String(item["automationId"], itemPath + "/automationId", kMaxIdChars, selector.automationId)) return false;
+      if (item.contains("scope")) {
+        if (!allowScopes || item["scope"] != "vscode.editor" || *controlType != classify::kEdit || item["automationId"] != "")
+          return Fail("selector_scope_invalid", itemPath);
+        selector.vscodeEditor = true;
+      } else if (!String(item["automationId"], itemPath + "/automationId", kMaxIdChars, selector.automationId)) return false;
       out.push_back(std::move(selector));
     }
     return true;
@@ -133,8 +137,11 @@ class Parser {
     }
     if (value.contains("documentRegions") &&
         !Selectors(value["documentRegions"], path + "/documentRegions", {classify::kDocument, classify::kEdit},
-                   rule.documentRegions)) {
+                   rule.documentRegions, true)) {
       return false;
+    }
+    for (const auto& selector : rule.documentRegions) {
+      if (selector.vscodeEditor && !HasVsCodeEditorScope(rule)) return Fail("selector_scope_invalid", path + "/documentRegions");
     }
     if (value.contains("sensitiveAutomationIds") &&
         !StringList(value["sensitiveAutomationIds"], path + "/sensitiveAutomationIds", kMaxIdChars,
@@ -338,8 +345,15 @@ bool IsSensitiveAutomationId(const Policy& policy, const AppRule& rule, std::wst
 bool MatchesSelector(const std::vector<ElementSelector>& selectors, long controlType, std::wstring_view automationId) {
   if (automationId.empty()) return false;
   return std::any_of(selectors.begin(), selectors.end(), [&](const ElementSelector& selector) {
-    return selector.controlType == controlType && selector.automationId == automationId;
+    return !selector.vscodeEditor && selector.controlType == controlType && selector.automationId == automationId;
   });
+}
+
+bool HasVsCodeEditorScope(const AppRule& rule) {
+  const auto separator = rule.executable.find_last_of(L"/\\");
+  const auto basename = std::wstring_view(rule.executable).substr(separator == std::wstring::npos ? 0 : separator + 1);
+  return text::EqualsOrdinalIgnoreCase(basename, L"Code.exe") &&
+    std::any_of(rule.documentRegions.begin(), rule.documentRegions.end(), [](const auto& selector) { return selector.vscodeEditor; });
 }
 
 }  // namespace memmy::policy

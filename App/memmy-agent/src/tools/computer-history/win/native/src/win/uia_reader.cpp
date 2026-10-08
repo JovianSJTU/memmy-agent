@@ -154,6 +154,29 @@ class Traversal {
     return Bounded(name.View());
   }
 
+  bool LiveScopedDocumentAuthorized(IUIAutomationElement* element) {
+    ComPtr<IUIAutomationElement> current = element;
+    const std::array<long, 4> types = {classify::kEdit, classify::kText, classify::kGroup, classify::kGroup};
+    for (std::size_t i = 0; i < types.size(); ++i) {
+      int pid = 0;
+      CONTROLTYPEID type = 0;
+      Bstr id;
+      Variant password;
+      if (!current || FAILED(current->get_CurrentProcessId(&pid)) || static_cast<std::uint32_t>(pid) != pid_ ||
+          FAILED(current->get_CurrentControlType(&type)) || type != types[i] ||
+          FAILED(current->get_CurrentAutomationId(id.Put())) || id.View() != (i == 3 ? L"workbench.parts.editor" : L"") ||
+          policy::IsSensitiveAutomationId(policy_, rule_, id.View()) ||
+          FAILED(current->GetCurrentPropertyValueEx(UIA_IsPasswordPropertyId, TRUE, password.Put())) ||
+          password.Get().vt != VT_BOOL || password.Get().boolVal != VARIANT_FALSE) return false;
+      if (i + 1 < types.size()) {
+        ComPtr<IUIAutomationElement> parent;
+        if (FAILED(walker_->GetParentElement(current.Get(), &parent))) return false;
+        current = std::move(parent);
+      }
+    }
+    return true;
+  }
+
   void ReadDocument(IUIAutomationElement* element, protocol::NodeRecord& node) {
     ComPtr<IUIAutomationTextPattern> pattern;
     if (FAILED(element->GetCurrentPatternAs(UIA_TextPatternId, IID_PPV_ARGS(&pattern))) || !pattern) {
@@ -316,6 +339,7 @@ class Traversal {
     facts.hasKeyboardFocus = node.focused;
     facts.textPatternAvailable = CachedBool(element, UIA_IsTextPatternAvailablePropertyId, false).value_or(false);
     facts.valuePatternAvailable = CachedBool(element, UIA_IsValuePatternAvailablePropertyId, false).value_or(false);
+    facts.scopedDocument = protocol::IsVsCodeEditorBody(node, response.nodes, rule_);
     // A long AutomationId that had to be truncated cannot match an exact selector.
     if (fullId.size() > kMaxAutomationIdChars) facts.automationId = {};
     const classify::NodeDecision decision = classify::Classify(facts, policy_, rule_);
@@ -324,8 +348,14 @@ class Traversal {
       node.redaction = classify::RedactionCode(decision.redaction);
       ++response.stats.redacted;
     }
-    if (decision.readName && !decision.readSearchValue) node.name = ReadName(element, node);
-    if (decision.readDocumentText && !Expired()) ReadDocument(element, node);
+    const bool liveDocument = !facts.scopedDocument || LiveScopedDocumentAuthorized(element);
+    if (decision.readName && !decision.readSearchValue && liveDocument) node.name = ReadName(element, node);
+    if (decision.readDocumentText && !Expired() && liveDocument) ReadDocument(element, node);
+    if (decision.readDocumentText && facts.scopedDocument) {
+      if (!liveDocument || !LiveScopedDocumentAuthorized(element)) { node.name.reset(); node.text.reset(); }
+      protocol::FinalizeScopedDocument(node);
+      if (!node.redaction.empty()) ++response.stats.redacted;
+    }
     if (decision.readSearchValue && !Expired()) {
       ReadSearchValue(element, node);
       // Cover failed ValuePattern/Name reads too: cached authorization is never sufficient.

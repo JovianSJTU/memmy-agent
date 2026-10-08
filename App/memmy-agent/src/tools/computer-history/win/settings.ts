@@ -5,10 +5,10 @@ import crypto from "node:crypto";
 import { execFile } from "node:child_process";
 import { resolveNativeCollector } from "./native-helper.js";
 import { z } from "zod";
-import { isSystemSurface, parseNativePolicy, pathKey, windowsApplicationId, type ApplicationBinding, type WindowsApplicationRule } from "./policy.js";
+import { documentSelector, isSystemSurface, parseNativePolicy, pathKey, windowsApplicationId, type ApplicationBinding, type WindowsApplicationRule } from "./policy.js";
 
 const rule = z.object({ executable: z.string().min(1), searchFields: z.array(z.object({ controlType: z.literal("Edit"), automationId: z.string() }).strict()).optional(),
-  documentRegions: z.array(z.object({ controlType: z.enum(["Edit", "Document"]), automationId: z.string() }).strict()).optional(), sensitiveAutomationIds: z.array(z.string()).optional() }).strict();
+  documentRegions: z.array(documentSelector).optional(), sensitiveAutomationIds: z.array(z.string()).optional() }).strict();
 const settingsSchema = z.object({ version: z.literal(1), applications: z.array(rule).max(32),
   defaultApplicationBehavior: z.enum(["observe", "do_not_observe"]).optional(),
   sensitiveAutomationIds: z.array(z.string()).optional(), deny: z.object({ executables: z.array(z.string()).optional() }).strict().optional(),

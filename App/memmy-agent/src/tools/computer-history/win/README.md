@@ -48,6 +48,35 @@ node dist/tools/computer-history/core/summarize-history.js --file "D:\history-va
 
 ## 验证
 
+### Word 与 VS Code 正文适配
+
+应用获准并绑定实际进程后，未自定义正文规则的 `WINWORD.EXE` 默认使用
+`Edit + Body`；`Code.exe` 默认使用 `{controlType:"Edit", automationId:"", scope:"vscode.editor"}`。
+显式 `documentRegions: []` 关闭默认正文规则，已有自定义规则保留。应用 deny、浏览器拒绝、
+密码和敏感子树检查不变。该适配不向未授权应用授予权限。
+
+VS Code 仅允许固定链 `Edit("") ← Text("") ← Group("") ← Group("workbench.parts.editor")`，
+节点及祖先的密码状态与 ID 都必须明确可读。C++ 在读取前后检查实时祖先、进程与敏感 ID；
+worker 校验与 TS 完整树复核各自重新判断范围。不存在通用空 ID 通配符，也不以文件名授权。
+启用此范围时，未明确授权的 workbench 节点不读 Name，防止查找词经旁边的状态提示泄露；
+Chat、终端、搜索和快速打开不能依靠普通 Text 标签绕过输入框过滤。
+
+范围内正文另有 `documentStatus: available | label_only | read_failed`。
+Name 与 Text 去掉首尾 ASCII 空白后相同且非空时，保守视为提示，清除所有内容；读取失败也清除内容。
+该判断不依赖提示语言，但正文恰好等于文件名时也会被保守排除。状态是采集证据，不保证用户阅读、
+正文完整或像素可见。VS Code `auto` 不保证自动启用辅助功能；本机显式 `on` 可读，`off` 和本轮
+未启用的 `auto` 仅得到不可访问提示。采集器不修改编辑器设置。
+
+本机 VS Code 的系统 `GetVisibleRanges` 实测仅返回光标所在行，尽管 DocumentRange 返回四行正文，
+且屏幕能显示四行。独立探针与包内采集输出一致。现有摘要优先使用 `visibleText`，所以可能只接收
+当前行；移动光标后对应行可进入摘要与检索。当前适配不保证整屏或全文进入摘要，不以完整正文
+替代可见范围。后续需要单独验证编辑器可见性语义，不能将该限制误述为没有正文接口。
+
+已验证 Word 两页 RTF 的页面视图、切换至第二页、查找内容排除。**草稿视图尚不支持**：
+其空 ID 外层 Document 能通过 UIA 返回正文，但当前 `Body` 规则不匹配。
+后续需验证独立的 Word 文档范围授权，不能放开所有空 ID Document。Office 其他版本、
+受保护文档、其他视图、VS Code 分屏/插件界面均不由这些样本保证；实测边界见 VALIDATION.md。
+
 真实应用正文缺失的定位入口见 [四层采集诊断](native/tests/diagnostics/README.md)：分别保存系统 UIA、生产 C++ 输出、实际 TypeScript 归一化结果和最终 JSONL，并核验前台及进程身份。先运行合成阳性/阴性对照，再测真实应用的合成文档；原始 UIA 诊断成功不等于产品采集成功。它只在测试构建中提供，不进入安装包，实测结论见 VALIDATION.md 的 2026-10-07 四层诊断记录。
 
 日常回归优先在仓库根目录运行统一入口：

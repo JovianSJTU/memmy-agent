@@ -12,11 +12,12 @@ namespace memmy::policy {
 
 inline constexpr std::size_t kMaxPolicyBytes = 256 * 1024;
 
-// Exact element selector. Matching uses control type and AutomationId only, both of which are
-// metadata read before any content; names are deliberately not selectable in v1.
+// Ordinary selectors match exact control type and nonempty AutomationId. The explicit
+// VS Code scope also checks a fixed ancestor chain before content; names never grant access.
 struct ElementSelector {
   long controlType = 0;
   std::wstring automationId;
+  bool vscodeEditor = false;  // fixed, bounded ancestry; never a wildcard empty AutomationId
 };
 
 struct AppRule {
@@ -87,5 +88,6 @@ bool IsKnownBrowserExecutable(std::wstring_view executablePath);
 bool IsSensitiveAutomationId(const Policy& policy, const AppRule& rule, std::wstring_view automationId);
 bool MatchesSelector(const std::vector<ElementSelector>& selectors, long controlType,
                      std::wstring_view automationId);
+bool HasVsCodeEditorScope(const AppRule& rule);
 
 }  // namespace memmy::policy

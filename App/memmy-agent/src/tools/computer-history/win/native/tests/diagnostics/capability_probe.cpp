@@ -102,6 +102,7 @@ Json Probe(const Json& request, const memmy::protocol::ContextRecord& context,
   struct Frame { ComPtr<IUIAutomationElement> element; int parent; int depth; };
   std::vector<Frame> stack{{root, -1, 0}};
   Json nodes = Json::array();
+  std::vector<memmy::protocol::NodeRecord> preceding;
   Json errors = Json::array();
   bool truncated = false;
   while (!stack.empty()) {
@@ -119,11 +120,18 @@ Json Probe(const Json& request, const memmy::protocol::ContextRecord& context,
     const auto textPattern = BoolProperty(element, UIA_IsTextPatternAvailablePropertyId);
     const auto valuePattern = BoolProperty(element, UIA_IsValuePatternAvailablePropertyId);
     const auto focused = BoolProperty(element, UIA_HasKeyboardFocusPropertyId);
+    memmy::protocol::NodeRecord metadata;
+    metadata.controlType = type; metadata.automationId = memmy::text::ToUtf8(id.View());
+    metadata.password = password; metadata.parent = frame.parent; metadata.depth = frame.depth;
+    if (FAILED(idHr)) metadata.missing.push_back("automationId");
+    const bool scopedDocument = memmy::protocol::IsVsCodeEditorBody(metadata, preceding, rule);
     const auto decision = memmy::classify::Classify({type,
       !password ? memmy::classify::PasswordState::Unknown : *password ? memmy::classify::PasswordState::True : memmy::classify::PasswordState::False,
-      id.View(), focused.value_or(false), textPattern.value_or(false), valuePattern.value_or(false)}, policy, rule);
+      id.View(), focused.value_or(false), textPattern.value_or(false), valuePattern.value_or(false), scopedDocument}, policy, rule);
     const auto typeName = memmy::classify::ControlTypeName(type);
     const auto redaction = memmy::classify::RedactionCode(decision.redaction);
+    metadata.redaction = redaction ? redaction : "";
+    preceding.push_back(std::move(metadata));
     std::string runtimeId;
     memmy::win::SafeArray runtime;
     if (SUCCEEDED(element->GetRuntimeId(runtime.Put())) && runtime.Get()) {
@@ -141,6 +149,7 @@ Json Probe(const Json& request, const memmy::protocol::ContextRecord& context,
       {"runtimeId", runtimeId},
       {"controlType", typeName ? typeName : "unknown"}, {"automationId", memmy::text::ToUtf8(id.View())}, {"automationIdHr", idHr},
       {"password", password ? Json(*password) : Json(nullptr)}, {"textPattern", textPattern ? Json(*textPattern) : Json(nullptr)},
+      {"providerOffscreen", [&]() -> Json { const auto value = BoolProperty(element, UIA_IsOffscreenPropertyId); return value ? Json(*value) : Json(nullptr); }()},
       {"valuePattern", valuePattern ? Json(*valuePattern) : Json(nullptr)},
       {"production", {{"redaction", redaction ? Json(redaction) : Json(nullptr)},
         {"readDocumentText", decision.readDocumentText}, {"traverseChildren", decision.traverseChildren}}}};
@@ -169,6 +178,39 @@ Json Probe(const Json& request, const memmy::protocol::ContextRecord& context,
             hr = range->GetText(2048, value.Put());
             node["textHr"] = hr;
             if (SUCCEEDED(hr)) node["text"] = memmy::text::ToUtf8(value.View());
+          }
+          // Independently expose provider ranges so complete DocumentRange text is
+          // never mistaken for the evidence the production summarizer receives.
+          ComPtr<IUIAutomationTextRangeArray> visible;
+          hr = pattern->GetVisibleRanges(&visible);
+          node["visibleRangesHr"] = hr;
+          if (SUCCEEDED(hr) && visible) {
+            int count = 0;
+            hr = visible->get_Length(&count);
+            node["visibleCountHr"] = hr;
+            if (SUCCEEDED(hr)) {
+              node["visibleCount"] = count;
+              node["visibleRanges"] = Json::array();
+              std::size_t remaining = 2048;
+              int visited = 0;
+              for (; visited < count && visited < 64 && remaining && !expired() && !foregroundMismatch; ++visited) {
+                ComPtr<IUIAutomationTextRange> item;
+                hr = visible->GetElement(visited, &item);
+                Json part = {{"index", visited}, {"rangeHr", hr}};
+                if (SUCCEEDED(hr) && item) {
+                  memmy::win::Bstr value;
+                  hr = item->GetText(static_cast<int>(remaining), value.Put());
+                  part["textHr"] = hr;
+                  if (SUCCEEDED(hr)) {
+                    const auto bounded = value.View().substr(0, remaining);
+                    part["text"] = memmy::text::ToUtf8(bounded);
+                    remaining -= bounded.size();
+                  }
+                }
+                node["visibleRanges"].push_back(std::move(part));
+              }
+              node["visibleRangesLimited"] = visited < count || remaining == 0;
+            }
           }
         }
       }

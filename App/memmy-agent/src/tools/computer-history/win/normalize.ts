@@ -2,6 +2,7 @@ import path from "node:path";
 import { scrubRecord, type HistoryEvent } from "../core/recording.js";
 import { authorizedRule, pathKey, windowsApplicationId, type NativePolicy } from "./policy.js";
 import type { NativeNode, NativeSnapshotEvent } from "./protocol.js";
+import { documentTextIsLabel, isVsCodeEditorBody } from "./document-regions.js";
 
 const structural = new Set(["Window", "Pane", "Group", "Custom", "MenuBar", "StatusBar", "Tab", "ToolBar",
   "List", "Tree", "DataGrid", "Header", "Table", "TitleBar", "SemanticZoom", "AppBar"]);
@@ -64,10 +65,11 @@ export class SnapshotNormalizer {
     const sensitive = new Set([...(policy.sensitiveAutomationIds ?? []), ...(rule.sensitiveAutomationIds ?? [])]
       .map((value) => value.toLowerCase()));
     const matches = (selectors: typeof rule.documentRegions, node: NativeNode): boolean =>
-      !!selectors?.some((selector) => selector.controlType === node.controlType && selector.automationId === node.automationId);
+      !!selectors?.some((selector) => !("scope" in selector) && selector.controlType === node.controlType && selector.automationId === node.automationId);
     let roots = 0;
     let total = 0;
     const blocks = new Set<string>();
+    const boundedEditor = rule.documentRegions?.some((selector) => "scope" in selector && selector.scope === "vscode.editor");
     for (const node of nodes.values()) {
       if (node.depth > policy.limits.maxDepth) return invalid();
       if (node.parentKey === null) { if (node.depth !== 0) return invalid(); ++roots; }
@@ -77,9 +79,15 @@ export class SnapshotNormalizer {
       }
       const content = fields.some((field) => node[field] !== undefined);
       const masked = sensitive.has(node.automationId.toLowerCase()) || node.password !== false;
-      const document = matches(rule.documentRegions, node);
+      const scoped = isVsCodeEditorBody(node, nodes, rule);
+      const document = matches(rule.documentRegions, node) || scoped;
       const search = node.controlType === "Edit" && node.focused && matches(rule.searchFields, node);
+      if ((node.documentStatus && !scoped) || (scoped && content && node.documentStatus !== "available")) return invalid();
+      if (node.documentStatus === "available" && (node.name === undefined || node.text === undefined || documentTextIsLabel(node))) return invalid();
+      if (node.documentStatus && node.documentStatus !== "available" && (content || node.redaction !== "edit_control")) return invalid();
       if ((node.redaction || masked) && content) return invalid();
+      // Input can be echoed into sibling live-region labels outside the Edit subtree.
+      if (boundedEditor && !document && !search && content) return invalid();
       if (node.controlType === "Edit" && !document && !search && content) return invalid();
       if ((node.text !== undefined || node.visibleText !== undefined) && !document) return invalid();
       if (node.value !== undefined && (!search || document)) return invalid();
@@ -108,6 +116,7 @@ export class SnapshotNormalizer {
       accessibility: { mode: "full", truncated: snapshot.truncated, nodes: [...nodes.values()].map((node) => ({
         key: node.key, parentKey: node.parentKey, controlType: node.controlType,
         providerOffscreen: node.providerOffscreen, ...(node.redaction ? { redaction: node.redaction } : {}),
+        ...(node.documentStatus ? { documentStatus: node.documentStatus } : {}),
         ...Object.fromEntries(fields.filter((field) => node[field] !== undefined).map((field) => [field, node[field]])),
       })) },
     } satisfies HistoryEvent);

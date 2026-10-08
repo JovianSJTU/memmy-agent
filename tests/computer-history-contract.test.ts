@@ -5,7 +5,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 // The desktop client validates every snapshot against this schema. Importing
 // it here checks the real contract rather than a hand-maintained list of field
 // names, which drifted twice before anything caught it.
-import { ComputerHistorySnapshotSchema, WindowsHistoryConfigurationSchema } from "../App/frontend/desktop/src/api/computer-history-contract.js";
+import { ComputerHistorySnapshotSchema, WindowsHistoryConfigurationSchema, WindowsHistorySettingsSchema } from "../App/frontend/desktop/src/api/computer-history-contract.js";
 import { WindowsComputerHistoryService } from "../App/memmy-agent/src/tools/computer-history/win/computer-history-api.js";
 import * as windowsSettings from "../App/memmy-agent/src/tools/computer-history/win/settings.js";
 import { ComputerHistoryDemoService, clientSnapshot } from "../App/memmy-agent/src/tools/computer-history/mac/computer-history-api.js";
@@ -32,6 +32,11 @@ afterEach(() => {
 // it. Neither package can import the other, which is precisely why the two
 // sides were free to drift.
 describe("snapshot contract with the desktop client", () => {
+  it("preserves the scoped editor selector across the desktop settings boundary", () => {
+    const settings = windowsSettings.parseWindowsSettings({ version: 1, applications: [{ executable: "C:\\Apps\\Code.exe",
+      documentRegions: [{ controlType: "Edit", automationId: "", scope: "vscode.editor" }] }] });
+    expect(WindowsHistorySettingsSchema.parse(settings)).toEqual(settings);
+  });
   it("validates real Windows consent, profiles and readiness against the desktop contract", async () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), "memmy-windows-contract-")); roots.push(root);
     const settingsFile = path.join(root, "windows.json");

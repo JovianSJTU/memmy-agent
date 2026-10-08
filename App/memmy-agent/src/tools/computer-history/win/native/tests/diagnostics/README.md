@@ -9,6 +9,10 @@ The four independently retained layers are:
 
 1. `system-uia.json`: native UIA TextPattern/DocumentRange from exact synthetic selectors,
    plus metadata, HRESULTs, truncation and the current production classifier's decision.
+   Matched bodies also report `GetVisibleRanges` HRESULTs, count and individual ranges
+   (at most 64 ranges / 2048 UTF-16 units, with `visibleRangesLimited`), independently
+   of the recorder. Compare these with native `visibleText` and the actual summary input;
+   a complete DocumentRange does not prove that the summary receives that complete text.
 2. `native.jsonl`: unchanged stdout bytes from the **production** recorder, strictly reparsed.
 3. `normalized.json`: return values of the actual `SnapshotNormalizer.normalizeEvents()`
    before the production writer consumes them.
@@ -65,8 +69,11 @@ Example case manifest (replace the current HWND, EXE and exact observed title):
 exactly, including compatibility-mode suffixes. Neither is a new production permission.
 `rule` accepts only existing `documentRegions`, `searchFields`, `sensitiveAutomationIds`.
 The runner binds PID, creation time, canonical executable and HWND itself; the rule cannot
-override identity. Leave `rule` empty to test the current default, then repeat with an existing
-valid selector to distinguish missing product configuration from missing native capability.
+override identity. By default an empty `rule` means **no document selectors**, preserving the
+original negative control. Set `useApplicationDefaults: true` to call the real
+`compileWindowsPolicy()` with an explicit app rule and the observed binding, including the
+current Word / VS Code defaults. Explicit `documentRegions: []` still disables defaults.
+Compare these modes to distinguish missing product configuration from native capability.
 
 ```powershell
 node --import tsx scripts/internal/win/history-capability.mjs --case D:/memmy-history-qa/word.json --native-bin D:/memmy-history-qa/build/release/memmy-history-recorder.exe --probe-bin D:/memmy-history-qa/build/release/memmy-history-capability-probe.exe --report-dir D:/memmy-history-qa/word-attempt-01
@@ -79,6 +86,14 @@ production first, then the raw probe; repeat cases document warm-provider behavi
 keeps its default 650 ms query / 1500 ms worker budgets. Diagnostic traversal uses 4000 ms by
 default (2000 nodes, depth 40, 2048 UTF-16 units per matched body), with an external 20 s process
 limit. These are different budgets; raw success does not prove production latency or completeness.
+
+For a packaged-runtime controlled call, run this same runner with the package's Electron in
+Node mode (`ELECTRON_RUN_AS_NODE=1`) and add `--runtime-root` pointing to
+`resources/app.asar/dist/runtime/memmy-agent/dist/tools/computer-history/win`. No tsx is needed
+in that mode: imports use the actual bundled JavaScript. `--native-bin` must equal the helper
+resolved by the bundled resolver; an explicit poisoned override is ignored. Metadata records
+the runtime path and helper hash. This tests installed components, not Desktop UI or a real
+model request, and intentionally leaves `installedAppAcceptance: false`.
 
 ## Interpret evidence, not exit codes alone
 

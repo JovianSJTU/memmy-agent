@@ -83,7 +83,8 @@ NodeDecision Classify(const NodeFacts& facts, const policy::Policy& policy, cons
     }
     // An exact, explicitly authorized body region (e.g. an editor surface exposed as Edit).
     if (facts.textPatternAvailable &&
-        policy::MatchesSelector(rule.documentRegions, facts.controlType, facts.automationId)) {
+        (policy::MatchesSelector(rule.documentRegions, facts.controlType, facts.automationId) ||
+         (facts.scopedDocument && policy::HasVsCodeEditorScope(rule)))) {
       decision.readName = true;
       decision.readDocumentText = true;
       return decision;
@@ -107,10 +108,13 @@ NodeDecision Classify(const NodeFacts& facts, const policy::Policy& policy, cons
     decision.redaction = Redaction::UnknownPassword;
     return decision;
   }
-  decision.readName = true;
+  // VS Code mirrors private input into sibling live-region/status labels. The bounded
+  // editor adapter authorizes bodies, not arbitrary workbench names (including Text).
+  decision.readName = !policy::HasVsCodeEditorScope(rule);
   if (facts.controlType == kDocument && facts.textPatternAvailable &&
       policy::MatchesSelector(rule.documentRegions, facts.controlType, facts.automationId)) {
     // The authorized body is read as one range; its children would only duplicate it.
+    decision.readName = true;
     decision.readDocumentText = true;
     return decision;
   }

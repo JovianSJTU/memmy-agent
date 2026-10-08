@@ -7,12 +7,15 @@ const decimal = z.string().regex(/^[1-9][0-9]*$/u).refine((value) => BigInt(valu
 const executable = z.string().min(1).max(32768).refine((value) => path.win32.isAbsolute(value)
   && !value.includes("\0") && !value.startsWith("\\\\.\\") && !value.startsWith("\\\\?\\"));
 const selector = z.object({ controlType: z.enum(["Edit", "Document"]), automationId: z.string().min(1).max(256) }).strict();
+export const documentSelector = z.union([selector,
+  z.object({ controlType: z.literal("Edit"), automationId: z.literal(""), scope: z.literal("vscode.editor") }).strict()]);
 const app = z.object({ pid: z.number().int().min(1).max(0xffffffff), executable,
   processStart: decimal.optional(), hwnd: decimal.optional(),
   searchFields: z.array(selector.refine((value) => value.controlType === "Edit")).max(32).optional(),
-  documentRegions: z.array(selector).max(32).optional(),
+  documentRegions: z.array(documentSelector).max(32).optional(),
   sensitiveAutomationIds: z.array(z.string().min(1).max(256)).max(128).optional(),
-}).strict();
+}).strict().refine((value) => !value.documentRegions?.some((item) => "scope" in item)
+  || path.win32.basename(value.executable).toLowerCase() === "code.exe");
 const limits = z.object({
   maxDepth: z.number().int().min(1).max(64).default(24),
   maxNodes: z.number().int().min(1).max(5000).default(400),
@@ -76,6 +79,14 @@ export function authorizedRule(policy: NativePolicy, context: { pid: number; exe
 
 export interface ApplicationBinding { pid: number; executable: string; processStart: string; hwnd?: string }
 export type WindowsApplicationRule = Omit<NativeAppRule, "pid" | "processStart" | "hwnd">;
+// Applied only after app consent/discovery binding. An explicit [] disables defaults.
+export function defaultDocumentRegions(executable: string): NativeAppRule["documentRegions"] {
+  switch (path.win32.basename(executable).toLowerCase()) {
+    case "winword.exe": return [{ controlType: "Edit", automationId: "Body" }];
+    case "code.exe": return [{ controlType: "Edit", automationId: "", scope: "vscode.editor" }];
+    default: return undefined;
+  }
+}
 // Discovery binds the chosen application scope to actual process instances. A broad scope
 // still supplies exact PID/path/creation-time bindings; the native collector has no wildcard.
 export function compileWindowsPolicy(rules: WindowsApplicationRule[], bindings: ApplicationBinding[],
@@ -86,7 +97,8 @@ export function compileWindowsPolicy(rules: WindowsApplicationRule[], bindings: 
         || options.deny?.executables?.some((item) => pathKey(item) === key)) return [];
     const rule = rules.find((item) => pathKey(item.executable) === key)
       ?? (options.defaultApplicationBehavior === "observe" ? { executable: binding.executable } : null);
-    return rule ? [{ ...rule, pid: binding.pid, executable: binding.executable, processStart: binding.processStart,
+    return rule ? [{ ...rule, documentRegions: rule.documentRegions ?? defaultDocumentRegions(binding.executable),
+      pid: binding.pid, executable: binding.executable, processStart: binding.processStart,
       ...(binding.hwnd ? { hwnd: binding.hwnd } : {}) }] : [];
   });
   return parseNativePolicy({ ...options, version: 1, applications });

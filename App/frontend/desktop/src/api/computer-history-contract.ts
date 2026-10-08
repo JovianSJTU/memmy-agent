@@ -14,8 +14,10 @@ export function historyPermissionsReady(status?: ComputerHistoryPermissions): bo
   return !!status?.supported && (status.platform === "windows" ? status.ready === true : status.accessibility && status.inputMonitoring);
 }
 const WindowsSelectorSchema = z.object({ controlType: z.enum(["Edit", "Document"]), automationId: z.string() }).strict();
+const WindowsDocumentSelectorSchema = z.union([WindowsSelectorSchema,
+  z.object({ controlType: z.literal("Edit"), automationId: z.literal(""), scope: z.literal("vscode.editor") }).strict()]);
 const WindowsAppRuleSchema = z.object({
-  executable: z.string(), searchFields: z.array(WindowsSelectorSchema).optional(), documentRegions: z.array(WindowsSelectorSchema).optional(),
+  executable: z.string(), searchFields: z.array(WindowsSelectorSchema).optional(), documentRegions: z.array(WindowsDocumentSelectorSchema).optional(),
   sensitiveAutomationIds: z.array(z.string()).optional(),
 }).strict();
 export const WindowsHistorySettingsSchema = z.object({ version: z.literal(1), applications: z.array(WindowsAppRuleSchema), sensitiveAutomationIds: z.array(z.string()).optional(), deny: z.object({ executables: z.array(z.string()).optional() }).strict().optional(),

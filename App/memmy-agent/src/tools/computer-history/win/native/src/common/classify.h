@@ -38,6 +38,7 @@ struct NodeFacts {
   bool hasKeyboardFocus = false;
   bool textPatternAvailable = false;
   bool valuePatternAvailable = false;
+  bool scopedDocument = false;  // derived locally from verified ancestors, never taken from wire content
 };
 
 enum class Redaction {

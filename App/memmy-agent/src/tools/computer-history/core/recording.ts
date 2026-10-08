@@ -23,6 +23,7 @@ export interface CaptureNode {
   visibleText?: string;
   value?: string;
   redaction?: string;
+  documentStatus?: "available" | "label_only" | "read_failed";
   providerOffscreen: boolean;
 }
 

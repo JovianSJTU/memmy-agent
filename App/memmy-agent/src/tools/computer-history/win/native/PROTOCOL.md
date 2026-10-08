@@ -125,6 +125,7 @@ The default stream omits these fields. UIA triggers alone never produce action o
 | `providerOffscreen` | always | Provider `IsOffscreen` flag. **Not proof** of visible pixels. |
 | `password` | always | `true`/`false`, or `null` when the provider does not report `IsPassword` |
 | `redaction` | when masked | `sensitive_id`, `password`, `edit_control`, `unknown_password`, `unknown_password_structural` |
+| `documentStatus` | scoped editor read attempted | `available`, `label_only`, or `read_failed`; participates in the node key when present |
 | `name` | when permitted | UIA `Name` |
 | `text` | authorized document region | `TextPattern.DocumentRange` text |
 | `visibleText` | authorized document region | Provider-reported visible ranges, `\n`-joined |
@@ -134,6 +135,13 @@ The default stream omits these fields. UIA triggers alone never produce action o
 
 Text limits count UTF-16 code units (JavaScript `length`). A `redaction` node never has
 `name`/`text`/`visibleText`/`value`.
+
+For the VS Code scope, `available` requires Name and Text; a nonempty Name equal to Text
+after trimming ASCII space/CR/LF/tab is conservatively `label_only`. This handles localized
+unavailable-editor hints without treating successful TextPattern calls as body proof. Missing
+Name/Text or failed live authorization yields `read_failed`. Both states omit all four content
+fields and use `edit_control`. A genuine body identical to its name is also conservatively
+excluded. Worker and TS validators independently check status, scope and content consistency.
 
 ### `session.paused` / `session.resumed`
 `alreadyPaused` / `alreadyRunning` (boolean; repeated commands are acknowledged idempotently).
@@ -199,21 +207,34 @@ applied. `observe` refuses to start without a valid policy, and each query re-re
 | `applications[].processStart` | no | decimal string; when present it must equal the process creation FILETIME |
 | `applications[].hwnd` | no | decimal string; when present only this top-level window matches |
 | `applications[].searchFields` | no | `[{controlType:"Edit", automationId}]`; value read only while that exact field has focus |
-| `applications[].documentRegions` | no | `[{controlType:"Document"|"Edit", automationId}]`; TextPattern read for that exact element |
+| `applications[].documentRegions` | no | Exact nonempty-ID selectors, or the bounded VS Code selector below; TextPattern body reads only |
 | `applications[].sensitiveAutomationIds` | no | blocks the element and its subtree (case-insensitive) |
 | `sensitiveAutomationIds` | no | same, for all applications |
 | `deny.executables`, `deny.pids` | no | refuse even if an application rule matches |
 | `limits` | no | `maxDepth` 1–64 (24), `maxNodes` 1–5000 (400), `maxVisited` ≥ maxNodes, ≤ 20000 (2000), `maxTextChars` 1–200000 (12000), `maxNodeTextChars` ≤ maxTextChars, ≤ 20000 (2048), `queryBudgetMs` 50–10000 (650), `workerTimeoutMs` 200–30000 and > queryBudgetMs (1500) |
 
-Selectors match control type plus exact AutomationId only. Names cannot be used as selectors in
-v1, because matching on a name would require reading it before the node is known to be
-permitted.
+Ordinary selectors match control type plus exact **nonempty** AutomationId. Names never grant
+permission. The only empty-ID exception is `{controlType:"Edit",automationId:"",scope:"vscode.editor"}`
+in documentRegions for a bound `Code.exe`. It requires the exact metadata chain
+`Edit("") <- Text("") <- Group("") <- Group("workbench.parts.editor")`, with successfully read IDs,
+password=false and unredacted ancestors. Native code checks live type/ID/password/PID/sensitive
+IDs before and after reading. Worker and TS validators reconstruct the scope independently;
+a changed ancestor invalidates the body permission, including in deltas.
+
+With this scope, generic workbench Names are not collected: search terms can be echoed into
+sibling status/live-region Text. Only authorized body or explicitly selected search fields may
+carry content. Normal ancestor traversal remains metadata-only. The host supplies Word
+`Edit + Body` and VS Code scoped defaults only after app consent/binding, unless documentRegions
+is explicitly supplied (including an empty array).
+
+These are additive v1 fields shipped together in the helper and adapter. Older strict clients
+can reject them; mixing old helpers/adapters with the new scope is unsupported and fails closed.
 
 The product host compiles its default application scope into PID/path/creation-time rules and
 refreshes them as applications open or close. The native collector still rejects every unmatched
 instance. Explicit deny rules, known browsers and login/lock/screensaver executables take
 precedence over all matching application rules. Policies without the new scope field retain the
-32-rule limit and exact-match behavior.
+32-rule limit and exact-match behavior (`defaultApplicationBehavior` is that application-scope field).
 
 ## Differences from the C# validation prototype
 
@@ -228,7 +249,7 @@ precedence over all matching application rules. Policies without the new scope f
 | Content events | `kind` = trigger name, `degraded` for failures | `kind: "snapshot"` with `status` + `reason`; trigger in `trigger.kinds` |
 | Unauthorized targets | silently skipped | `blocked` event with `context: null`, repeats suppressed |
 | Browser | URL/private-state logic with a test `allowUnknownPrivate` switch | all known browsers `browser_unsupported`; no URL, no switch |
-| Office/VS Code fixture selectors | name/AutomationId fixture lists per app | generic `documentRegions` (`Document`/`Edit` + AutomationId); app-specific adapters deferred |
+| Office/VS Code fixture selectors | name/AutomationId fixture lists per app | Word Body default and bounded VS Code editor scope; generic nonempty-ID selectors remain available |
 | Credential regex scrubbing | yes (`password=…` → `[REDACTED]`) | not implemented natively; left to the consumer's redaction |
 | Segment manifest | `.segments.json` sidecar | no sidecar; segment names are deterministic, each starts with `segment.started` |
 | Mouse trigger detail | coordinates and button recorded | no coordinates, no key codes |

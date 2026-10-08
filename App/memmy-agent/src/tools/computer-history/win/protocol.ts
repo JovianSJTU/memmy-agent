@@ -13,6 +13,7 @@ const controlType = z.enum(["Button", "Calendar", "CheckBox", "ComboBox", "Edit"
 const nodeSchema = z.object({ key, parentKey: key.nullable(), runtimeId: z.string().max(512), controlType,
   automationId: z.string().max(256), depth: count.max(64), focused: z.boolean(), providerOffscreen: z.boolean(),
   password: z.boolean().nullable(), redaction: z.enum(["sensitive_id", "password", "edit_control", "unknown_password", "unknown_password_structural"]).optional(),
+  documentStatus: z.enum(["available", "label_only", "read_failed"]).optional(),
   name: z.string().max(20000).optional(), text: z.string().max(20000).optional(),
   visibleText: z.string().max(20000).optional(), value: z.string().max(20000).optional(),
   bounds: z.tuple([z.number().finite(), z.number().finite(), z.number().finite(), z.number().finite()]).optional(),
