@@ -13,7 +13,34 @@
 - Release 与 Debug 各 34/34 个 CTest 用例通过，零跳过。报告在 `.history-migration/release-native.xml`、`debug-native.xml`；受控输出在 `.history-migration/artifacts/`。初次沙箱内 UIA 调用阻塞，旧版用例同样阻塞；改为沙箱外仅运行受控 fixture 后通过，这不是放宽密码判断。
 - 统一回归通过：590 项通过、8 项明确跳过，类型、lint、Agent/前端构建及 Electron 包内生产 EXE 执行检查通过。逐项报告在 `.history-migration/regression/computer-history-validation-EI7bGT/results.json`；跳过名称与原因保留在该报告中。
 - Release EXE 为 1,021,952 字节，仍是静态 CRT 的独立原生程序；新增依赖为 Windows 自带 Shell/version API，无新增 npm 或 .NET 依赖。
-- 新 CI workflow 已有本地契约和报告行为验证；尚未在 GitHub 远端运行。本轮未重新安装 App，也未扩大真实应用、IME 或模型验收结论。
+- 上述源码阶段不计为安装版验收；后续 fork CI 与本机安装复验分别记录如下，不扩大 IME 或真实模型结论。
+
+#### Fork 提交与专项 CI
+
+迁入提交为 `7619722c`（原生密码保护及应用目录）、`8ae788f9`（产品设置与应用搜索）、`870d6820`（专项 CI），另有 `72640b64` 修复 CI 前端构建环境。只推送用户 fork 的 `origin/codex/windows-history-native-core`，没有向 MemTensor upstream 推送代码或创建 PR。GitHub 将原 `JovianSJTU/memmy-agent` 重定向到 `Jovianix/memmy-agent`，原有远端配置保持不变。
+
+[专项 CI 37906790384](https://github.com/Jovianix/memmy-agent/actions/runs/37906790384) 在 `72640b64` 上通过：原生 **34/34，零跳过**；产品回归 **591 通过 / 0 失败 / 7 明确跳过**，类型、lint、Agent/前端构建与 Electron 包内生产 EXE 执行通过。下载证据在 `.history-migration/acceptance-20261009/ci-passed/`。CI 的原生测试运行于交互 session 2，但仍不是用户安装版、真实应用或模型验收。
+
+首轮 CI `37905538741` 的原生与测试均通过，最后的前端构建因缺少必需法律网站 HTTPS origin 配置失败；修复仅给专项 workflow 提供仓库已有默认地址，并增加对应契约断言，没有削弱产品构建校验。首轮证据保留在同目录的 `ci-first/`。
+
+#### 新版安装与真实应用复验
+
+本机报告位于 `.history-migration/acceptance-20261009/`。重新编译全部 Agent、界面及生产原生组件，复用上一轮已验证且依赖清单未变化的 shell/runtime 暂存依赖，以正式 unsigned NSIS 配置封装；这是限定范围的重打包，不计为重新执行完整依赖安装流程。安装器于本地 17:05:40 安装成功，用户数据保留，旧安装器另存 `prior-installer.exe`。
+
+- 新安装器仍为 `App/shell/desktop/release/Memmy-1.1.8-win32-x64-cn-unsigned.exe`，**1.1.8 / x64 / CN phone / NotSigned**，355,358,715 bytes；SHA-256 `E6B3B180D05298961CCC4AA9581E1DE8EDEAE06BAC4D962C9F353CD2B031A95A`。版本、ASAR 边界和实际 x64 PE 检查通过。
+- 正式生产 helper 为 **700,928 bytes**，SHA-256 `666BC89541FB56124AFCDCF63F4820C92ED6A0DF13607D6A64F510E2E7D1A1AC`，Release `/O2 /Ob2 /DNDEBUG`、静态 CRT，只有 Windows 系统 DLL 导入。上面的 1,021,952 bytes 来自旧本地 Release 配置，其缓存的 `CMAKE_CXX_FLAGS_RELEASE` 为空，不能拿来代表正式优化产物体积。该差异没有扩大采集权限。
+- 安装后 Desktop、ASAR、helper 三项哈希与新包匹配。包内及安装后的 History 编译模块和界面资源各 **40 文件**与当前本地构建相符。正式 ASAR 校验见 `asar-verification.log`；实际 Electron SQLite 查询为 ABI 139，开发环境随后恢复 Node ABI 137，并实际查询通过。
+- `packaged/preflight.json` 与 `installed/preflight.json` 各 **9 通过 / 0 失败**：固定包内生产 helper、实际应用目录（包含 Word 与 Visual Studio Code 友好名称）、默认 stopped 和 legacy 范围、三个 SQLite、共享摘要 CLI 及退出日志。PATH 不含开发工具，并设置故意无效的 helper 覆盖。
+- `installed/fixture-foreground-service/` **6 通过 / 0 失败**：仅授权合成 fixture；密码样式兜底、密码/普通 Edit/敏感后代与凭据内容均未落盘；暂停期间无新增内容，恢复保持同一段且 sequence 递增；排除 fixture 后停止且权限不再 ready；实际摘要请求经合成 provider 响应进入生产检索，文件停止后稳定；录制中调用服务 shutdown 正常结束。首轮 `fixture-service/` 未取得前台，在开始采集前失败并保留；使用桌面工具确认唯一 fixture 前台后重跑，没有降低前台门禁。
+- `installed/word-layers/`、`code-layers/` 前台/身份条件有效，合成正文各自系统 UIA → 生产原生 → 标准化 → JSONL **四层贯通**，无隐私阴性标记泄漏。Word 采用默认正文规则；Code 1.140.0 使用禁用扩展、辅助模式 `on` 的隔离 profile，不推广至 auto/off 或其他版本。
+- `installed/word-service/` 与 `code-service/` 各 **5 通过 / 0 失败**：实际安装版服务采集、默认应用规则、完整停止、真实摘要请求输入、各一次合成模型响应、生产检索及停止后文件稳定。Code 的结构化摘要输入保持 `provider_range_text`、`pixel_visibility: unverified` 和 `uia.name` 标签；没有新增真实模型、像素可见性或聊天端到端验收。
+- 实际 Desktop 窗口验证了 Word 名称搜索、`Microsoft VS Code` 路径搜索、无匹配提示及取消返回。没有操作授权开关、勾选或保存范围。隐藏选择与高级规则的保存由前端 6 项交互回归覆盖，不冒充此次真实 UI 保存操作。
+
+Windows History 设置文件仍维持本轮开始时的不存在状态。共享 `config.yaml` 在 Desktop 启动时被产品重写，整文件哈希从 `64E70311...` 变为 `A2A1CF11...`，见 `installed/ui-catalog.json`；时点与既有 `mutateRuntimeConfig`/Memory endpoint 启动写入一致。本轮没有调用模型设置写入 API，但只保留了启动前哈希，没有完整内容快照，因此不宣称共享配置字节或所有字段均未变，也不覆盖正在运行的配置。
+
+首次封装在 PowerShell 5 将 Vite stderr 警告当错误时中断，尚未替换暂存内容；保留 `repack-first-result.json`，PowerShell 7 重跑封装成功。其首次 Electron 直接调用未捕获查询输出，改为等待进程结束后实际查询，记录为 `electron-sqlite-verified-query.json`；包内预检再次实际加载所有 SQLite，才允许安装。托盘退出独立核验，不用服务 shutdown 结果替代实际托盘动作。
+
+本轮 Word 与隔离 Code 测试窗口正常关闭，fixture/采集器/探针均无残留，Memory 服务健康检查为 200，见 `cleanup-before-tray.json`。Desktop PID 25884 保持 stopped 状态，实际托盘退出等待用户点击；当前桌面工具没有返回可操作的 Windows 托盘窗口，不能从源码接线或组件 shutdown 宣称真实托盘验收通过。这一步尚未完成，退出后需检查该 PID 的 `quit-lifecycle.jsonl`、子进程清理与 Memory 保留状态。本轮不新增录制中的真实 Desktop 托盘退出结论。
 
 在仓库根目录执行，Windows PowerShell、Git Bash 和 macOS 终端使用同一入口：
 
