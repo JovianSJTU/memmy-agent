@@ -59,6 +59,9 @@ jobs:
           ./scripts/internal/win/history-validation-report.ps1 -Report .history-ci/native-results.xml -Output .history-ci/native-summary.json
           if ($testExit -ne 0) { exit $testExit }
       - name: Run History contracts, UI, packaging and native lifecycle validation
+        env:
+          MEMMY_LEGAL_CN_BASE_URL: https://memmy.cn
+          MEMMY_LEGAL_INTL_BASE_URL: https://memmy.bot
         run: |
           node scripts/internal/shared/validate-computer-history.mjs --report-dir "$env:GITHUB_WORKSPACE/.history-ci/regression" --native-bin "$env:GITHUB_WORKSPACE/.history-ci/build/release"
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }

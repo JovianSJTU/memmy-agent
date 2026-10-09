@@ -8,7 +8,7 @@ import YAML from "yaml";
 const root = path.resolve(import.meta.dirname, "..");
 const source = fs.readFileSync(path.join(root, ".github/workflows/windows-computer-history-validation.yml"), "utf8");
 const workflow = YAML.parse(source);
-const steps = workflow.jobs.validate.steps as { uses?: string; run?: string; with?: Record<string, unknown>; if?: string }[];
+const steps = workflow.jobs.validate.steps as { uses?: string; run?: string; env?: Record<string, string>; with?: Record<string, unknown>; if?: string }[];
 
 describe("Windows History validation workflow", () => {
   it("validates changes with read-only permissions and serial native tests before product validation", () => {
@@ -25,6 +25,10 @@ describe("Windows History validation workflow", () => {
     expect(steps[native]!.run).toContain("--parallel 1");
     expect(steps[native]!.run).toContain("--output-junit");
     expect(steps[product]!.run).toContain("--native-bin");
+    expect(steps[product]!.env).toEqual({
+      MEMMY_LEGAL_CN_BASE_URL: "https://memmy.cn",
+      MEMMY_LEGAL_INTL_BASE_URL: "https://memmy.bot",
+    });
     expect(steps.find((step) => step.uses?.startsWith("actions/upload-artifact@"))?.if).toContain("always()");
   });
 });
