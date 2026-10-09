@@ -6,10 +6,12 @@ import type { HistoryPlatformDriver, HistoryPermissions, RecorderLaunch } from "
 import { applicationCatalog, browserNames, discoverApplications, resolveWindowsCollector, WindowsSettingsStore } from "./settings.js";
 import { isSystemSurface, pathKey } from "./policy.js";
 import path from "node:path";
+import { discoverApplicationCatalog, type CatalogApplication } from "./application-catalog.js";
 
 interface ProcessSession { ready: Promise<void>; closed: Promise<void> }
 export class WindowsPlatformDriver implements HistoryPlatformDriver {
   private readonly sessions = new WeakMap<ChildProcessWithoutNullStreams, ProcessSession>();
+  private catalog: { expires: number; entries: CatalogApplication[] } | undefined;
   constructor(readonly store: WindowsSettingsStore, private readonly binary?: string,
     private readonly recorderScript = fileURLToPath(new URL("./record-human-history.js", import.meta.url))) {}
   prepare(): void {
@@ -22,7 +24,12 @@ export class WindowsPlatformDriver implements HistoryPlatformDriver {
     const settings = this.store.read();
     let bindings: Awaited<ReturnType<typeof discoverApplications>> = [];
     try { bindings = await discoverApplications(resolveWindowsCollector(this.binary)); } catch { /* capabilities reports the cause */ }
-    return { settings, applications: applicationCatalog(bindings, settings), permissions: await this.readPermissions() };
+    if (!this.catalog || Date.now() >= this.catalog.expires) {
+      let entries: CatalogApplication[] = [];
+      try { entries = await discoverApplicationCatalog(resolveWindowsCollector(this.binary)); } catch { /* EXE names remain available */ }
+      this.catalog = { expires: Date.now() + 60000, entries };
+    }
+    return { settings, applications: applicationCatalog(bindings, settings, this.catalog.entries), permissions: await this.readPermissions() };
   }
   async readPermissions(): Promise<HistoryPermissions> {
     const status: HistoryPermissions = { supported: true, platform: "windows", accessibility: false, inputMonitoring: false, ready: false, reason: "authorization_required" };

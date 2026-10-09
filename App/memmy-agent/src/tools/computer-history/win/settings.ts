@@ -5,6 +5,7 @@ import crypto from "node:crypto";
 import { execFile } from "node:child_process";
 import { resolveNativeCollector } from "./native-helper.js";
 import { z } from "zod";
+import type { CatalogApplication } from "./application-catalog.js";
 import { documentSelector, isSystemSurface, parseNativePolicy, pathKey, windowsApplicationId, type ApplicationBinding, type WindowsApplicationRule } from "./policy.js";
 
 const rule = z.object({ executable: z.string().min(1), searchFields: z.array(z.object({ controlType: z.literal("Edit"), automationId: z.string() }).strict()).optional(),
@@ -66,9 +67,11 @@ export async function discoverApplications(binary: string): Promise<ApplicationB
   } catch { throw new Error("windows_discovery_invalid"); }
 }
 export const browserNames = new Set(["msedge.exe", "chrome.exe", "firefox.exe", "brave.exe", "opera.exe", "vivaldi.exe", "iexplore.exe", "chromium.exe", "arc.exe", "librewolf.exe", "waterfox.exe", "thorium.exe", "floorp.exe", "zen.exe", "360se.exe", "360chrome.exe", "qqbrowser.exe", "sogouexplorer.exe", "2345explorer.exe", "liebao.exe", "msedgewebview2.exe", "tor.exe"]);
-export function applicationCatalog(bindings: ApplicationBinding[], settings: WindowsHistorySettings) {
+export function applicationCatalog(bindings: ApplicationBinding[], settings: WindowsHistorySettings, installed: CatalogApplication[] = []) {
+  const friendlyNames = new Map(installed.map((entry) => [pathKey(entry.executable), entry.name]));
   const names = new Map<string, { id: string; name: string; executable: string; running: boolean; supported: boolean; allowed: boolean; rule?: WindowsApplicationRule }>();
-  for (const binding of [...settings.applications.map((item) => ({ ...item, running: false })),
+  for (const binding of [...installed.map((item) => ({ ...item, running: false })),
+    ...settings.applications.map((item) => ({ ...item, running: false })),
     ...(settings.deny?.executables ?? []).map((executable) => ({ executable, running: false })),
     ...bindings.map((item) => ({ ...item, running: true }))]) {
     const key = pathKey(binding.executable);
@@ -76,7 +79,7 @@ export function applicationCatalog(bindings: ApplicationBinding[], settings: Win
     const rule = settings.applications.find((item) => pathKey(item.executable) === key);
     const supported = !browserNames.has(path.win32.basename(key));
     const denied = settings.deny?.executables?.some((exe) => pathKey(exe) === key);
-    names.set(key, { id: windowsApplicationId(key), name: path.win32.basename(binding.executable), executable: binding.executable,
+    names.set(key, { id: windowsApplicationId(key), name: friendlyNames.get(key) ?? path.win32.basename(binding.executable), executable: binding.executable,
       running: binding.running, supported, allowed: supported && !denied && (settings.defaultApplicationBehavior === "observe" || !!rule), ...(rule ? { rule } : {}) });
   }
   return [...names.values()].sort((left, right) => left.name.localeCompare(right.name));

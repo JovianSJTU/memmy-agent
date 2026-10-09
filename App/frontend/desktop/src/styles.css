@@ -12363,6 +12363,7 @@ body.memmy-platform-windows:not(.memmy-window-fullscreen) .memmy-notification-st
 .ch__windows-settings-body > p { flex: 0 0 auto; margin: 0 0 12px; font-size: 13px; line-height: 1.6; }
 .ch__windows-scope { display: grid; gap: 8px; font-size: 13px; }
 .ch__windows-scope select { min-width: 0; width: 100%; padding: 8px; border: 1px solid var(--color-border-stone); border-radius: 8px; background: var(--color-background-paper); color: var(--color-text-ink); }
+.ch__windows-settings-body input[type="search"] { width: 100%; padding: 8px; border: 1px solid var(--color-border-stone); border-radius: 8px; background: var(--color-background-paper); color: var(--color-text-ink); }
 .ch__windows-applications { flex: 0 0 auto; display: grid; gap: 8px; max-height: 320px; overflow-y: auto; }
 .ch__windows-application { display: flex; align-items: flex-start; gap: 8px; padding: 8px; border: 1px solid var(--color-border-stone); border-radius: 8px; font-size: 13px; }
 .ch__windows-application > input { flex: 0 0 auto; margin-top: 3px; }

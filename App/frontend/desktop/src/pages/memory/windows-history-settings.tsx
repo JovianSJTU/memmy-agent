@@ -11,6 +11,7 @@ export function WindowsHistorySettings(props: { client: MemmyAgentClient; onClos
   const { t } = useTranslation();
   const [configuration, setConfiguration] = useState<WindowsHistoryConfiguration | null>(null);
   const [selected, setSelected] = useState(new Set<string>());
+  const [query, setQuery] = useState("");
   const [behavior, setBehavior] = useState<"observe" | "do_not_observe">("observe");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -50,6 +51,9 @@ export function WindowsHistorySettings(props: { client: MemmyAgentClient; onClos
   };
   const reason = configuration?.permissions.reason;
   const reasonText = reason && reason !== "ready" ? t(`computerHistory.windows.${reason}`) : null;
+  const search = query.trim().toLocaleLowerCase();
+  const visibleApplications = configuration?.applications.filter((app) =>
+    !search || app.name.toLocaleLowerCase().includes(search) || app.executable.toLocaleLowerCase().includes(search)) ?? [];
   return createPortal(<Modal open title={t("computerHistory.windows.title")} closeLabel={t("common.close")} onClose={() => { if (!busy) props.onClose(); }}
     closeDisabled={busy} className="confirm-dialog confirm-dialog--titled ch__permission-dialog ch__windows-settings"
     bodyClassName="confirm-dialog__body ch__windows-settings-body" footerClassName="confirm-dialog__footer"
@@ -74,8 +78,10 @@ export function WindowsHistorySettings(props: { client: MemmyAgentClient; onClos
     </label>
     {reasonText ? <p role="status">{reasonText}</p> : null}
     {error ? <p role="alert">{error}</p> : null}
+    <input type="search" aria-label={t("computerHistory.windows.search")} placeholder={t("computerHistory.windows.search")}
+      value={query} disabled={busy} onChange={(event) => setQuery(event.target.value)} />
     <div className="ch__windows-applications">
-      {configuration?.applications.map((app) => <label key={app.id} className="ch__windows-application">
+      {visibleApplications.map((app) => <label key={app.id} className="ch__windows-application">
         <input type="checkbox" checked={selected.has(app.id)} disabled={busy || (!app.supported && !selected.has(app.id)) || (behavior !== "observe" && !selected.has(app.id) && selected.size >= 32)} onChange={(event) => {
           setSelected((current) => { const next = new Set(current); if (event.target.checked) next.add(app.id); else next.delete(app.id); return next; });
         }} />
@@ -83,6 +89,7 @@ export function WindowsHistorySettings(props: { client: MemmyAgentClient; onClos
           <span className="ch__windows-application-path">{app.executable}</span></span>
       </label>)}
       {configuration && !configuration.applications.length ? <p>{t("computerHistory.windows.empty")}</p> : null}
+      {configuration && !!configuration.applications.length && !visibleApplications.length ? <p>{t("computerHistory.windows.noMatches")}</p> : null}
     </div>
   </Modal>, document.body);
 }

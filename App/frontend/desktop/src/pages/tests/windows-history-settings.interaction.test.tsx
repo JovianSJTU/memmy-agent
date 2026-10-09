@@ -32,6 +32,28 @@ async function render(config = configuration(), start?: () => Promise<void>) {
 const button = (label: string) => [...document.querySelectorAll<HTMLButtonElement>("button")].find((node) => node.textContent === label)!;
 
 describe("Windows application scope", () => {
+  it("searches friendly names and paths while preserving hidden selections and selectors on save", async () => {
+    const config = configuration();
+    const rule = { executable: "C:\\Apps\\Fixture.exe", searchFields: [{ controlType: "Edit" as const, automationId: "search" }] };
+    config.settings.applications = [rule];
+    Object.assign(config.applications[0]!, { name: "中文编辑器", allowed: true, rule });
+    const { client } = await render(config);
+    const search = document.querySelector<HTMLInputElement>('input[type="search"]')!;
+    const searchFor = async (text: string) => act(async () => {
+      Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!.call(search, text);
+      search.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+    await searchFor("中文");
+    expect(document.querySelectorAll('input[type="checkbox"]')).toHaveLength(1);
+    expect(document.body.textContent).toContain("中文编辑器");
+    await searchFor("APPS\\chrome");
+    expect(document.querySelectorAll('input[type="checkbox"]')).toHaveLength(1);
+    expect(document.body.textContent).not.toContain("中文编辑器");
+    await searchFor("no matches");
+    expect(document.body.textContent).toContain("No matching applications.");
+    await act(async () => { button("Save selection").click(); });
+    expect(client.updateWindowsHistorySettings).toHaveBeenCalledExactlyOnceWith({ version: 1, applications: [rule] });
+  });
   it("does not select discovered applications and prevents selecting unsupported browsers", async () => {
     const { client, onClose } = await render();
     const inputs = document.querySelectorAll<HTMLInputElement>('input[type="checkbox"]');
