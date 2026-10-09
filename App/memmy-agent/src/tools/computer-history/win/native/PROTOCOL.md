@@ -11,7 +11,7 @@ than treating native snapshots as Mac AX events.
 - UTF-8 JSON Lines: one JSON object per line, `\n`-terminated, no BOM. Strings are emitted
   as UTF-8 (not `\u` escaped). Unpaired UTF-16 surrogates from UI text become U+FFFD.
 - `observe` writes every line to stdout and, with `--output`, to segmented files. `snapshot`
-  writes exactly one line. `windows` and `applications` write exactly one line. stderr carries only
+  writes exactly one line. `windows`, `applications` and `catalog` write exactly one line. stderr carries only
   diagnostics: `{"diagnostic":"<code>","detail":"<code or path>"}`. These contain no captured
   content.
 - Key order is insertion order (envelope first) but carries no meaning.
@@ -26,6 +26,16 @@ than treating native snapshots as Mac AX events.
 At most 512 visible-window process identities are returned, with each PID present once.
 No title, UIA content, selector or authorization result is included. Discovery never grants
 capture permission. The `windows --pid` diagnostic command retains its existing format.
+
+`catalog` is a separate display response, without a session envelope:
+`{protocol:"memmy.windows.computer-history",version:1,platform:"windows",kind:"application.catalog",applications:[{executable,name}]}`.
+At most 512 canonical local EXE paths are returned. Names come from local Start Menu shortcuts,
+then running EXE FileDescription/filename metadata; names are limited to 256 UTF-16 units.
+Shortcuts are loaded without resolving or launching them. Missing targets, network paths,
+reparse points and helper executables are excluded. Only an existing sibling named by
+`Update.exe --processStart` is accepted as a launcher target. Directory enumeration stops after
+4096 entries. No PID, creation time, UIA content or capture rule is supplied. This response
+cannot replace `applications` instance discovery or serve as a snapshot/observation stream.
 
 | Field | Type | Meaning |
 |---|---|---|

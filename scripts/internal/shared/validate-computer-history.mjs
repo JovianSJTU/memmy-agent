@@ -122,7 +122,7 @@ try {
     `--exclude=${nativeTest}`]);
   tests("frontend-tests", frontend, frontendTests);
   tests("contract-packaging-tests", root, ["tests/computer-history-contract.test.ts", "tests/computer-history-packaging.test.mjs",
-    "tests/computer-history-windows-packaging.test.mjs"],
+    "tests/computer-history-windows-packaging.test.mjs", "tests/windows-history-workflow.test.ts"],
   { ...environment, ...(options["--native-bin"] ? { MEMMY_WINDOWS_HISTORY_TEST_BIN_DIR: options["--native-bin"] } : {}) });
   for (const platform of ["core", "mac"]) {
     run(`summary-cli-${platform}`, agent, [`dist/tools/computer-history/${platform}/summarize-history.js`, "--help"]);

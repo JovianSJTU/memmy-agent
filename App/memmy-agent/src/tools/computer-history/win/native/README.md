@@ -34,6 +34,7 @@ memmy-history-recorder help | --help
 memmy-history-recorder version | --version
 memmy-history-recorder windows --pid N
 memmy-history-recorder applications
+memmy-history-recorder catalog
 memmy-history-recorder snapshot --hwnd N --policy FILE
 memmy-history-recorder observe --policy FILE [--output FILE] [--seconds N] [--rotate-seconds N]
                                [--sample-ms N] [--parent-pid N] [--input-hooks]
@@ -44,6 +45,9 @@ memmy-history-recorder observe --policy FILE [--output FILE] [--seconds N] [--ro
   path and creation FILETIME only. It never reads window titles or UIA content, and does not
   authorize or begin recording. The product uses these identities for explicit application
   selection and for binding selected paths to current instances.
+- `catalog` supplies local installed/running application display names, from Start Menu `.lnk`
+  metadata and EXE version resources. It never launches a link or supplies capture identities.
+  Enumeration and output are bounded; failures in product discovery fall back to EXE names.
 - `snapshot` performs one authorized read of a foreground window and prints one `snapshot`
   event. Exit code 0 means `ok` and 3 means refused or unavailable.
 - `observe` records the foreground window while it is authorized. It runs for `--seconds`
@@ -61,6 +65,12 @@ Recording never starts implicitly. `observe` requires a valid policy, and only w
 policy names are read.
 
 ## Architecture
+
+Password checks combine UIA `IsPassword` with native HWND owner, Edit/RichEdit/Windows Forms
+class and `ES_PASSWORD` metadata before any Name/Value/Text read. A native password result
+overrides a provider's false assertion even when the provider reports a Pane. Unknown state
+never grants text permission; the final native check discards content and prunes children if
+the state becomes unsafe. Windowless elements retain the existing provider-based rules.
 
 ```
 collector process (observe / snapshot)

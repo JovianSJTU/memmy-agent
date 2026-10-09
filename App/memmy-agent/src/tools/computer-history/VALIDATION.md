@@ -4,6 +4,17 @@
 
 ## 统一验证入口
 
+### 2026-10-09：吸收 PR #578 的 Windows History 实现
+
+对照快照 `upstream/pr-578`（`c578572e`），迁入三项：原生密码样式兜底、本地应用目录与友好名称、Windows History 专项 CI。应用目录保持展示用途，采集继续按原有规范 EXE 路径、PID、创建时间及前台窗口校验；普通输入框、正文选择器及浏览器排除边界保持原有规则。
+
+- 密码测试先独立确认合成窗口的系统 UIA 返回 `Pane / IsPassword=false`，且 Name 和子节点暴露秘密标记；生产快照返回 `password=true / redaction=password`，没有秘密内容和后代节点。原生元数据测试另覆盖 HWND 所属 PID、销毁窗口、样式变化、未知属性及无关窗口类的同位样式。
+- 应用目录测试覆盖中文快捷方式、同名 EXE 的不同路径、重复项、运行进程回退、Squirrel 同目录启动目标和缺失/辅助/网络目标排除。产品测试覆盖严格协议、目录与运行实例分离、缓存及失败回退；前端测试覆盖友好名称/路径搜索、无匹配提示、隐藏选择和高级规则保留。
+- Release 与 Debug 各 34/34 个 CTest 用例通过，零跳过。报告在 `.history-migration/release-native.xml`、`debug-native.xml`；受控输出在 `.history-migration/artifacts/`。初次沙箱内 UIA 调用阻塞，旧版用例同样阻塞；改为沙箱外仅运行受控 fixture 后通过，这不是放宽密码判断。
+- 统一回归通过：590 项通过、8 项明确跳过，类型、lint、Agent/前端构建及 Electron 包内生产 EXE 执行检查通过。逐项报告在 `.history-migration/regression/computer-history-validation-EI7bGT/results.json`；跳过名称与原因保留在该报告中。
+- Release EXE 为 1,021,952 字节，仍是静态 CRT 的独立原生程序；新增依赖为 Windows 自带 Shell/version API，无新增 npm 或 .NET 依赖。
+- 新 CI workflow 已有本地契约和报告行为验证；尚未在 GitHub 远端运行。本轮未重新安装 App，也未扩大真实应用、IME 或模型验收结论。
+
 在仓库根目录执行，Windows PowerShell、Git Bash 和 macOS 终端使用同一入口：
 
 ```text

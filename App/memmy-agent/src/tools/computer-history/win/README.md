@@ -8,7 +8,7 @@
 
 Windows 持久配置默认是 `~/.memmy/computer-history/windows-settings.json`。不存在文件时返回 `{version:1, defaultApplicationBehavior:"observe", applications:[]}`，但不会自动开始录制。新增字段可为 `observe`（支持的应用，排除项优先）或 `do_not_observe`（仅选定应用）；已有 v1 配置未包含新字段时保留原白名单，不能在升级时扩大范围。其余 `applications`、`sensitiveAutomationIds`、`deny.executables`、`limits` 格式不变。界面保留精确选择器，默认仍不保留普通 Edit 输入内容。应用专属高级规则最多 32 条，原生实例绑定在默认观察模式下最多 512 条；高级规则可手动配置，修改前应停止记录。
 
-`GET /api/computer-history/windows/settings` 返回配置、可选应用与 readiness；`POST` 的请求体为 `{settings: <完整配置>}`。两者要求现有 API token 和 Windows 宿主。应用列表仅含进程身份，不读取窗口标题或 UIA 内容。每次启动及每两秒刷新，将所选范围绑定到真实 PID、规范路径和创建时间；新打开的应用需等刷新后才能采集。刷新前等待暂停确认；没有可用实例时使用明确拒绝的策略，设置损坏、超过预算或刷新失败会停止采集。
+`GET /api/computer-history/windows/settings` 返回配置、可选应用与 readiness；`POST` 的请求体为 `{settings: <完整配置>}`。两者要求现有 API token 和 Windows 宿主。可选列表合并本地开始菜单快捷方式、运行进程和已有配置，名称优先使用快捷方式，再使用 EXE 的 FileDescription 或文件名；可以按名称或路径搜索，筛选后保存保留隐藏的选择和高级规则。目录信息缓存 60 秒，发现失败时回退到 EXE 名称；显示目录不读取窗口标题或 UIA 内容、不启动应用、不提供授权实例。每次启动及每两秒刷新，将所选范围绑定到真实 PID、规范路径和创建时间；新打开的应用需等刷新后才能采集。刷新前等待暂停确认；没有可用实例时使用明确拒绝的策略，设置损坏、超过预算或刷新失败会停止采集。
 
 服务沿用十分钟分段、摘要调度、保留/删除和工作流提取。暂停会关闭本次子进程，恢复可继续同一时间段的已正常关闭 JSONL，保持单个 metadata 和连续序号；中断或跨平台文件不能续写。Windows 的 `permissions.platform=windows` 与 `ready/reason` 表示组件和授权就绪，Mac 权限字段保持 false，界面不展示 Mac 系统权限向导。Windows 暂时只有历史检索工具，Mac 的 status/settings 工具不在 Windows 注册。
 
@@ -38,6 +38,7 @@ node dist/tools/computer-history/core/summarize-history.js --file "D:\history-va
 - 原生协议见 [PROTOCOL.md](native/PROTOCOL.md)。适配器严格校验 UTF-8、消息类型、字段、序号、sessionId、时间顺序和大小上限。启动消息必须对应自己创建的子进程，生产入口拒绝 testHooks 构建。
 - 原生采集始终要求精确实例策略，PID、规范化 EXE 路径和可选 HWND / 创建时间必须匹配。`compileWindowsPolicy()` 将默认观察/仅选定范围绑定当前实例，没有原生通配授权。deny 优先，锁屏/登录/屏保表面和已知浏览器仍然拒绝。改名浏览器和嵌入网页不能仅凭 EXE 名称识别，仍受普通应用的节点过滤约束。
 - Windows 应用使用 `windows:<EXE 路径 SHA-256>` 标识，不伪装为 Mac bundleId。默认应用范围与 Mac 对齐，但 Windows 仍读取独立配置；Mac 的权限布尔值不代表 Windows 就绪。
+- 原生读取前结合 UIA 密码属性与 Win32 HWND 所属 PID、Edit/RichEdit/Windows Forms 类名及 `ES_PASSWORD`。原生密码样式可覆盖 UIA 的非密码 Pane 误报；不确定状态不能放行文本。读取后再次核对原生状态，变为密码或未知时丢弃内容并裁剪子树。没有原生 HWND 的元素仍使用现有 provider 规则。
 - full/delta 先重建为完整树，再独立检查父子层级、重复键、输入框授权、密码状态、敏感标识、子树裁剪与文本预算。无基线的 delta、上下文/策略改变后的 delta、部分结果后的 delta 都会拒绝。阻断快照、暂停和恢复会清空基线。
 - 只有脱敏后的 `human_history_metadata` / `human_event` JSONL 落盘。Windows 节点保存为通用 `accessibility` 结构；Mac 原有 AX 字段及旧导入路径兼容保留。UIA 的触发通知不转换成虚构的点击或键盘动作。真实低级钩子可提供点击位置、滚动方向、导航键及有限快捷键；普通文本键只记录次数，AltGr 的可打印键身份也被清除。不能将这些次数当成字数或 IME 上屏文字。密码、敏感或未知焦点不输出键盘动作。
 - 动作与授权快照一起校验 HWND、前台/焦点 generation 和最终提交条件，最多 64 条，丢失通过 `actionOverflow` 表示。`injected` 标识软件注入；摘要保留此限制。点击目标与结果没有通过钩子证明，工作流不能把坐标当成稳定目标。低级输入与 WinEvent/UIA 的异步顺序仍可能漏记；该链路不提供无遗漏的输入审计保证。
@@ -114,6 +115,8 @@ node scripts/internal/shared/validate-computer-history.mjs
 ```
 
 入口覆盖共享业务、Windows 接入、前端、类型、lint 和构建，并保存逐项报告。可通过 `--native-bin <绝对构建目录>` 加入生产 EXE 的生命周期验证。平台条件、跳过原因及 Mac 接续步骤见 [阶段基线与验证说明](../VALIDATION.md)。
+
+`.github/workflows/windows-computer-history-validation.yml` 在 Windows 2025 / Node 22 x64 上构建原生核心、串行执行受控 fixture 测试，再运行统一回归及包内 EXE 检查。`native-summary.json` 分开记录通过、失败和桌面前提不满足的跳过；基础逻辑、Win32 边界、元数据和 CLI 用例必须运行并通过。日志和测试输出上传为 CI artifact；这不代表签名安装包、真实应用、IME 或模型服务已经验收。
 
 Desktop 退出、进程树和安装脚本回归单独从仓库根目录运行，不与 History 计数合并：
 

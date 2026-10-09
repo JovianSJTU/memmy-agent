@@ -42,10 +42,14 @@ if (-not $vsRoot) { throw 'No Visual Studio installation with the x64 C++ toolse
 $devCmd = Join-Path $vsRoot 'Common7\Tools\VsDevCmd.bat'
 $envDump = & cmd.exe /d /s /c "`"$devCmd`" -no_logo -arch=x64 -host_arch=x64 && set"
 if ($LASTEXITCODE -ne 0) { throw 'VsDevCmd.bat failed.' }
+# Some launchers supply both Path and PATH. Prefer the developer PATH over the
+# inherited alias so a later environment line cannot hide cl.exe.
+$developerPath = ($envDump | Where-Object { $_.StartsWith('PATH=') } | Select-Object -First 1)
 foreach ($line in $envDump) {
   $separator = $line.IndexOf('=')
   if ($separator -gt 0) { [Environment]::SetEnvironmentVariable($line.Substring(0, $separator), $line.Substring($separator + 1)) }
 }
+if ($developerPath) { $env:PATH = $developerPath.Substring(5) }
 $env:VSLANG = '1033'
 $env:PATH = (Join-Path $vsRoot 'Common7\IDE\CommonExtensions\Microsoft\CMake\CMake\bin') + ';' +
             (Join-Path $vsRoot 'Common7\IDE\CommonExtensions\Microsoft\CMake\Ninja') + ';' + $env:PATH
