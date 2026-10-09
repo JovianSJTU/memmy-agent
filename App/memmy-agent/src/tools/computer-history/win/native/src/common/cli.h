@@ -9,7 +9,7 @@
 
 namespace memmy::cli {
 
-enum class CommandKind { Help, Version, Applications, Windows, Snapshot, Observe, Worker };
+enum class CommandKind { Help, Version, Applications, Catalog, Windows, Snapshot, Observe, Worker };
 
 // Fault-injection options. Accepted only by the separately built test-hooks executable.
 struct TestOptions {

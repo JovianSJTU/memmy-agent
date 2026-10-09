@@ -48,6 +48,8 @@ int wmain(int argc, wchar_t** argv) {
         return memmy::win::RunWindows(command);
       case memmy::cli::CommandKind::Applications:
         return memmy::win::RunApplications();
+      case memmy::cli::CommandKind::Catalog:
+        return memmy::win::RunCatalog();
       case memmy::cli::CommandKind::Snapshot:
         return memmy::win::RunSnapshot(command);
       case memmy::cli::CommandKind::Observe:

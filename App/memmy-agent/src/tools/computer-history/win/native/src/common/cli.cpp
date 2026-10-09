@@ -28,6 +28,7 @@ const char* UsageText() {
          "  memmy-history-recorder version | --version\n"
          "  memmy-history-recorder windows --pid N\n"
          "  memmy-history-recorder applications\n"
+         "  memmy-history-recorder catalog\n"
          "  memmy-history-recorder snapshot --hwnd N --policy FILE\n"
          "  memmy-history-recorder observe --policy FILE [--output FILE] [--seconds N]\n"
          "                                 [--rotate-seconds N] [--sample-ms N]\n"
@@ -59,6 +60,8 @@ ParseResult Parse(const std::vector<std::wstring>& args, bool allowTestOptions) 
     command.kind = CommandKind::Windows;
   } else if (verb == L"applications") {
     command.kind = CommandKind::Applications;
+  } else if (verb == L"catalog") {
+    command.kind = CommandKind::Catalog;
   } else if (verb == L"snapshot") {
     command.kind = CommandKind::Snapshot;
   } else if (verb == L"observe") {
@@ -70,7 +73,7 @@ ParseResult Parse(const std::vector<std::wstring>& args, bool allowTestOptions) 
     return result;
   }
 
-  if ((command.kind == CommandKind::Help || command.kind == CommandKind::Version || command.kind == CommandKind::Worker || command.kind == CommandKind::Applications) &&
+  if ((command.kind == CommandKind::Help || command.kind == CommandKind::Version || command.kind == CommandKind::Worker || command.kind == CommandKind::Applications || command.kind == CommandKind::Catalog) &&
       args.size() > 1) {
     result.error = "unknown_option";
     return result;

@@ -44,6 +44,8 @@ target_link_libraries(memmy_history_core PUBLIC memmy_history_options memmy_nloh
 
 set(MEMMY_RECORDER_WIN_SOURCES
   src/win/identity.cpp
+  src/win/password.cpp
+  src/win/application_catalog.cpp
   src/win/system.cpp
   src/win/hook_thread.cpp
   src/win/control_input.cpp
@@ -58,7 +60,7 @@ set(MEMMY_RECORDER_WIN_SOURCES
 function(memmy_add_recorder target test_hooks)
   add_executable(${target} ${MEMMY_RECORDER_WIN_SOURCES})
   target_compile_definitions(${target} PRIVATE MEMMY_HISTORY_TEST_HOOKS=${test_hooks})
-  target_link_libraries(${target} PRIVATE memmy_history_core ole32 oleaut32 uiautomationcore bcrypt)
+  target_link_libraries(${target} PRIVATE memmy_history_core ole32 oleaut32 uiautomationcore bcrypt shell32 version uuid)
 endfunction()
 
 memmy_add_recorder(memmy-history-recorder 0)
@@ -83,6 +85,12 @@ if(MEMMY_HISTORY_BUILD_TESTS)
   target_link_libraries(memmy-history-win-tests PRIVATE memmy_history_core bcrypt)
   add_test(NAME win.boundaries COMMAND memmy-history-win-tests)
   set_tests_properties(win.boundaries PROPERTIES TIMEOUT 15 RUN_SERIAL TRUE)
+
+  add_executable(memmy-history-metadata-tests tests/unit/metadata_tests.cpp
+    src/win/password.cpp src/win/application_catalog.cpp src/win/identity.cpp)
+  target_link_libraries(memmy-history-metadata-tests PRIVATE memmy_history_core ole32 shell32 version uuid)
+  add_test(NAME win.metadata COMMAND memmy-history-metadata-tests)
+  set_tests_properties(win.metadata PROPERTIES TIMEOUT 15 RUN_SERIAL TRUE)
 
   add_executable(memmy-history-fixture WIN32 tests/fixture/fixture.cpp)
   target_link_libraries(memmy-history-fixture PRIVATE memmy_history_options memmy_nlohmann_json)

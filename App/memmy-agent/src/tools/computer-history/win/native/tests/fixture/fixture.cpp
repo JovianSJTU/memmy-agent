@@ -3,8 +3,8 @@
 // Window A exposes known static text, an updatable message, a search edit, an ordinary edit
 // with a child static, a password edit with a child static, a read-only RichEdit document and a
 // container whose AutomationId the tests mark sensitive (with a child static). Window B holds a
-// separate static. All sentinel strings embed a per-run nonce. Only standard Win32 controls are
-// used, so UIA content comes from the system-provided UIA/MSAA proxies.
+// separate static. All sentinel strings embed a per-run nonce. A custom window class with an
+// EDIT prefix and ES_PASSWORD deliberately exposes a non-password Pane through the system proxy.
 //
 // Commands arrive as lines on stdin and each produces one JSON line on stdout. stdin EOF exits.
 // --idle runs without windows (used as a stand-in parent process).
@@ -26,7 +26,7 @@ using Json = nlohmann::ordered_json;
 constexpr UINT kCommandMessage = WM_APP + 7;
 constexpr int kStatic = 1001, kMessage = 1002, kSearch = 1003, kEdit = 1004, kPassword = 1005, kDocument = 1006,
               kPanel = 1007, kButton = 1008, kEditChild = 1104, kPasswordChild = 1105, kPanelChild = 1107,
-              kSecondStatic = 2001;
+              kMisreportedPassword = 1009, kMisreportedChild = 1109, kSecondStatic = 2001;
 
 HWND g_windowA = nullptr;
 HWND g_windowB = nullptr;
@@ -233,6 +233,10 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int) {
   panelClass.lpfnWndProc = DefWindowProcW;
   panelClass.lpszClassName = L"MemmyHistoryFixturePanel";
   RegisterClassExW(&panelClass);
+  WNDCLASSEXW passwordClass = panelClass;
+  passwordClass.lpfnWndProc = DefWindowProcW;
+  passwordClass.lpszClassName = L"WindowsForms10.EDIT.MemmyPassword";
+  RegisterClassExW(&passwordClass);
 
   g_windowA = CreateWindowExW(0, windowClass.lpszClassName, L"Memmy History Fixture A", WS_OVERLAPPEDWINDOW,
                               80, 60, 720, 560, nullptr, nullptr, instance, nullptr);
@@ -249,6 +253,9 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int) {
   HWND panel = Child(g_windowA, L"MemmyHistoryFixturePanel", L"Sensitive panel", WS_BORDER, kPanel, 16, 334, 660, 60);
   Child(panel, L"STATIC", Sentinel(L"SENSITIVE"), 0, kPanelChild, 8, 8, 500, 24);
   Child(g_windowA, L"BUTTON", L"Update message", BS_PUSHBUTTON | WS_TABSTOP, kButton, 16, 402, 200, 32);
+  HWND misreported = Child(g_windowA, passwordClass.lpszClassName, Sentinel(L"MISREPORTEDPASSWORD"),
+    WS_BORDER | ES_PASSWORD, kMisreportedPassword, 240, 402, 420, 56);
+  Child(misreported, L"STATIC", Sentinel(L"MISREPORTEDCHILD"), 0, kMisreportedChild, 4, 30, 400, 20);
 
   g_windowB = CreateWindowExW(0, windowClass.lpszClassName, L"Memmy History Fixture B", WS_OVERLAPPEDWINDOW,
                               820, 60, 420, 220, nullptr, nullptr, instance, nullptr);

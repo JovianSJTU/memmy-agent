@@ -1,4 +1,5 @@
 #include "win/commands.h"
+#include "win/application_catalog.h"
 
 #include "common/baseline.h"
 #include "common/json.h"
@@ -880,6 +881,16 @@ int RunApplications() {
   }
   const Json out = {{"protocol", protocol::kProtocolName}, {"version", protocol::kProtocolVersion},
                     {"platform", protocol::kPlatform}, {"kind", "applications"},
+                    {"applications", std::move(applications)}};
+  return WriteStdout(DumpJson(out) + "\n") ? kExitOk : kExitOutput;
+}
+
+int RunCatalog() {
+  Json applications = Json::array();
+  for (const auto& entry : ApplicationCatalog())
+    applications.push_back({{"executable", entry.executable}, {"name", entry.name}});
+  const Json out = {{"protocol", protocol::kProtocolName}, {"version", protocol::kProtocolVersion},
+                    {"platform", protocol::kPlatform}, {"kind", "application.catalog"},
                     {"applications", std::move(applications)}};
   return WriteStdout(DumpJson(out) + "\n") ? kExitOk : kExitOutput;
 }

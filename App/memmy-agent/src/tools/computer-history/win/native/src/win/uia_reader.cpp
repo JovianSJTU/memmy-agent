@@ -4,6 +4,7 @@
 #include "common/json.h"
 #include "common/text.h"
 #include "win/identity.h"
+#include "win/password.h"
 #include "win/raii.h"
 #include "win/system.h"
 
@@ -109,6 +110,13 @@ class Traversal {
   }
 
  private:
+  std::optional<bool> NativePassword(IUIAutomationElement* element) const {
+    UIA_HWND handle = nullptr;
+    if (FAILED(element->get_CurrentNativeWindowHandle(&handle))) return std::nullopt;
+    // Windowless UIA elements continue to rely on the provider password property.
+    return handle ? NativePasswordState(reinterpret_cast<HWND>(handle), pid_) : std::optional<bool>(false);
+  }
+
   bool Expired() const { return MonotonicMs() - started_ > policy_.limits.queryBudgetMs; }
 
   void Truncate(const char* code) {
@@ -253,7 +261,7 @@ class Traversal {
            SUCCEEDED(element->get_CurrentAutomationId(id.Put())) && text::ToUtf8(id.View()) == node.automationId &&
            policy::MatchesSelector(rule_.searchFields, type, id.View()) &&
            SUCCEEDED(element->GetCurrentPropertyValueEx(UIA_IsPasswordPropertyId, TRUE, password.Put())) &&
-           password.Get().vt == VT_BOOL && password.Get().boolVal == VARIANT_FALSE;
+           password.Get().vt == VT_BOOL && password.Get().boolVal == VARIANT_FALSE && NativePassword(element) == false;
   }
 
   void ReadSearchValue(IUIAutomationElement* element, protocol::NodeRecord& node) {
@@ -321,7 +329,7 @@ class Traversal {
         node.className = text::ToUtf8(className.View());
     }
 
-    const auto password = CachedBool(element, UIA_IsPasswordPropertyId, true);
+    const auto password = EffectivePasswordState(CachedBool(element, UIA_IsPasswordPropertyId, true), NativePassword(element));
     node.password = password;
     BOOL focus = FALSE;
     BOOL offscreen = FALSE;
@@ -393,11 +401,22 @@ class Traversal {
       }
       if (!node.redaction.empty()) ++response.stats.redacted;
     }
+    // A password style can change while the provider is answering. Discard all content,
+    // including Name, and prune descendants if the final native check is unsafe.
+    const auto finalNative = NativePassword(element);
+    if (finalNative != false) {
+      node.name.reset(); node.value.reset(); node.text.reset(); node.visibleText.reset();
+      node.documentStatus.clear();
+      node.password = EffectivePasswordState(password, finalNative);
+      if (node.redaction.empty()) ++response.stats.redacted;
+      facts.password = node.password == true ? classify::PasswordState::True : classify::PasswordState::Unknown;
+      node.redaction = classify::RedactionCode(classify::Classify(facts, policy_, rule_).redaction);
+    }
     response.stats.missingProperties += node.missing.size();
 
     response.nodes.push_back(std::move(node));
     ++response.stats.emitted;
-    traverse = decision.traverseChildren;
+    traverse = decision.traverseChildren && finalNative == false;
     return true;
   }
 

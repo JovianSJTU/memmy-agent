@@ -414,7 +414,7 @@ class Fixture {
 };
 
 // Sentinels that must never appear in recorder output for the fixture.
-std::vector<std::string> ForbiddenKinds() { return {"EDIT", "EDITCHILD", "PASSWORD", "PWCHILD", "SENSITIVE"}; }
+std::vector<std::string> ForbiddenKinds() { return {"EDIT", "EDITCHILD", "PASSWORD", "PWCHILD", "SENSITIVE", "MISREPORTEDPASSWORD", "MISREPORTEDCHILD"}; }
 
 void ExpectNoLeak(const std::string& output, const Fixture& fixture, std::vector<std::string> kinds,
                   const std::string& where) {
@@ -439,7 +439,7 @@ void VerifyFixtureExposesChildren(Fixture& fixture) {
   }
   ComPtr<IUIAutomationTreeWalker> walker;
   automation->get_ControlViewWalker(&walker);
-  const std::pair<int, const char*> checks[] = {{1004, "EDITCHILD"}, {1005, "PWCHILD"}, {1007, "SENSITIVE"}};
+  const std::pair<int, const char*> checks[] = {{1004, "EDITCHILD"}, {1005, "PWCHILD"}, {1007, "SENSITIVE"}, {1009, "MISREPORTEDCHILD"}};
   for (const auto& [id, kind] : checks) {
     HWND control = GetDlgItem(fixture.Hwnd('a'), id);
     ComPtr<IUIAutomationElement> element, child;
@@ -453,6 +453,14 @@ void VerifyFixtureExposesChildren(Fixture& fixture) {
     SysFreeString(name);
     if (value != fixture.S(kind)) Fail(std::string("fixture precondition: unexpected UIA child text for ") + kind);
   }
+  ComPtr<IUIAutomationElement> misreported;
+  Expect(SUCCEEDED(automation->ElementFromHandle(GetDlgItem(fixture.Hwnd('a'), 1009), &misreported)), "misreported password provider");
+  CONTROLTYPEID type = 0; BOOL password = TRUE; BSTR name = nullptr;
+  misreported->get_CurrentControlType(&type); misreported->get_CurrentIsPassword(&password); misreported->get_CurrentName(&name);
+  const std::string value = name ? U8(std::wstring(name, SysStringLen(name))) : "";
+  SysFreeString(name);
+  Expect(type == UIA_PaneControlTypeId && !password && value == fixture.S("MISREPORTEDPASSWORD"),
+    "fixture must expose a non-password Pane containing the secret Name");
 }
 
 // ------------------------------------------------------------------------------- policies
@@ -664,6 +672,13 @@ void CaseCliContract() {
     Expect(app.size() == 3 && app["pid"].is_number_unsigned() && app["executable"].is_string() && app["processStart"].is_string(),
            "application discovery emits identity only, never window titles or UI content");
   }
+  r = RunToEnd(g_paths.Recorder(), {L"catalog"}, "application-catalog");
+  Expect(r.exitCode == 0 && r.lines.size() == 1, "catalog command");
+  const Json catalog = ParseLine(r.lines[0]);
+  Expect(catalog["kind"] == "application.catalog" && catalog["applications"].is_array() && catalog["applications"].size() <= 512,
+    "bounded display catalog");
+  for (const auto& app : catalog["applications"])
+    Expect(app.size() == 2 && app["name"].is_string() && app["executable"].is_string(), "catalog emits display metadata only");
 }
 
 void CasePolicyStrict() {
@@ -792,10 +807,17 @@ void CaseSnapshotContent() {
                "edit-focused snapshot");
   const Json* edit = FindNode(event, "1004");
   const Json* password = FindNode(event, "1005");
+  const auto passwordRuntimeId = "42." + std::to_string(reinterpret_cast<std::uintptr_t>(GetDlgItem(fixture.Hwnd('a'), 1009)));
+  const Json* misreported = nullptr;
+  for (const auto& node : event["snapshot"]["nodes"])
+    if (node.value("runtimeId", "") == passwordRuntimeId) misreported = &node;
   const Json* panel = FindNode(event, "1007");
   const Json* document = FindNode(event, "1006");
   Expect(edit && (*edit)["redaction"] == "edit_control" && !edit->contains("name"), "edit redaction");
   Expect(password && (*password)["redaction"] == "password" && (*password)["password"] == true, "password redaction");
+  Expect(misreported && (*misreported)["redaction"] == "password" && (*misreported)["password"] == true &&
+    !misreported->contains("name"), "native password style overrides non-password Pane provider");
+  ExpectNoLeak(text, fixture, {"MISREPORTEDPASSWORD", "MISREPORTEDCHILD"}, "native password fallback");
   Expect(panel && (*panel)["redaction"] == "sensitive_id", "sensitive container redaction");
   Expect(document && (*document)["text"].get<std::string>().find(fixture.S("DOCUMENT")) != std::string::npos,
          "authorized document text");
