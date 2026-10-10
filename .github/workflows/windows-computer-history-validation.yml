@@ -3,7 +3,7 @@ name: Windows Computer History validation
 on:
   push:
     branches:
-      - "codex/windows-history-native-core"
+      - "feature/windows-history-native-core"
   pull_request:
     paths:
       - ".github/workflows/windows-computer-history-validation.yml"

@@ -14,7 +14,7 @@ describe("Windows History validation workflow", () => {
   it("validates changes with read-only permissions and serial native tests before product validation", () => {
     expect(workflow.permissions).toEqual({ contents: "read" });
     expect(Object.keys(workflow.on).sort()).toEqual(["pull_request", "push", "workflow_dispatch"]);
-    expect(workflow.on.push.branches).toEqual(["codex/windows-history-native-core"]);
+    expect(workflow.on.push.branches).toEqual(["feature/windows-history-native-core"]);
     expect(workflow.on.pull_request.paths).toContain("App/memmy-agent/**");
     expect(workflow.jobs.validate["runs-on"]).toBe("windows-2025");
     expect(steps.find((step) => step.uses?.startsWith("actions/checkout@"))?.with?.["persist-credentials"]).toBe(false);

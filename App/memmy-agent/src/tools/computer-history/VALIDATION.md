@@ -4,6 +4,14 @@
 
 ## 统一验证入口
 
+### 2026-10-10：个人 fork 开发分支改名
+
+当前 Windows History 开发分支为 `feature/windows-history-native-core`，由 `codex/windows-history-native-core` 改名，已有提交历史保留。协作指南没有强制个人任务分支前缀；参考 upstream 已有 `feature/agent-wy`（PR #557）采用 `feature/`。本任务继续在同一分支追加提交。
+
+专项 CI 的 push 目标及对应工作流契约测试同步使用新名称，个人 fork 的分支、跟踪关系和本地拉取范围同步调整。下文历史验收记录保留当时的分支名与提交 ID。本次不更改产品实现，不向 MemTensor upstream 推送或创建 PR。
+
+本次定向验证：`node node_modules/vitest/vitest.mjs run tests/windows-history-workflow.test.ts` 为 **4/4 通过，零跳过**，覆盖新分支触发规则及原有 CTest 报告判断；`git diff --check` 通过。不把这次配置验证计为新的产品或安装版验收。
+
 ### 2026-10-09：吸收 PR #578 的 Windows History 实现
 
 对照快照 `upstream/pr-578`（`c578572e`），迁入三项：原生密码样式兜底、本地应用目录与友好名称、Windows History 专项 CI。应用目录保持展示用途，采集继续按原有规范 EXE 路径、PID、创建时间及前台窗口校验；普通输入框、正文选择器及浏览器排除边界保持原有规则。
